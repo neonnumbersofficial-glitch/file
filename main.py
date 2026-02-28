@@ -22,7 +22,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot Configuration
-BOT_TOKEN = "8587129513:AAH7WIce5I7fbgg0U2FphCQAwgOMy5-MtfA"
+BOT_TOKEN = "8587129513:AAE6denzbgGIcbKMStYRtF4Jd1z5XiBSxFQ"
 ADMIN_ID = 8469461108
 BOT_USERNAME = "EXUBOTAI_1BOT"  # Plain text for URLs
 
