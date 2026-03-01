@@ -7,6 +7,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 import json
 import os
 import sys
+from flask import Flask, render_template_string, jsonify
+import threading
+import time
 
 # Logging setup
 logging.basicConfig(
@@ -46,6 +49,10 @@ LINKS_DATA_FILE = "links_data.json"
 USERS_DATA_FILE = "users_data.json"
 SETTINGS_DATA_FILE = "settings_data.json"
 
+# Flask configuration
+FLASK_PORT = 5000
+FLASK_HOST = "0.0.0.0"  # Allow external connections
+
 # Initialize data files with proper error handling
 def load_json_file(filename, default_data):
     """Load JSON file with error handling."""
@@ -73,6 +80,9 @@ settings_data = load_json_file(SETTINGS_DATA_FILE, {
     "allowed_groups": [],
     "group_chat_enabled": False
 })
+
+# Bot start time for uptime tracking
+BOT_START_TIME = time.time()
 
 def generate_unique_id():
     """Generate unique ID for files."""
@@ -102,33 +112,465 @@ def save_settings_data():
     with open(SETTINGS_DATA_FILE, 'w') as f:
         json.dump(settings_data, f)
 
-def clear_terminal():
-    """Clear the terminal screen."""
-    os.system('cls' if os.name == 'nt' else 'clear')
+def get_uptime():
+    """Get bot uptime in readable format."""
+    uptime_seconds = int(time.time() - BOT_START_TIME)
+    days = uptime_seconds // 86400
+    hours = (uptime_seconds % 86400) // 3600
+    minutes = (uptime_seconds % 3600) // 60
+    seconds = uptime_seconds % 60
+    
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    parts.append(f"{seconds}s")
+    
+    return " ".join(parts)
 
-def show_banner():
-    """Display the bot banner."""
-    banner = """
-███████╗██╗  ██╗██╗   ██╗     ██████╗ ██████╗ ██████╗ ███████╗██╗  ██╗
-██╔════╝╚██╗██╔╝██║   ██║    ██╔════╝██╔═══██╗██╔══██╗██╔════╝╚██╗██╔╝
-█████╗   ╚███╔╝ ██║   ██║    ██║     ██║   ██║██║  ██║█████╗   ╚███╔╝ 
-██╔══╝   ██╔██╗ ██║   ██║    ██║     ██║   ██║██║  ██║██╔══╝   ██╔██╗ 
-███████╗██╔╝ ██╗╚██████╔╝    ╚██████╗╚██████╔╝██████╔╝███████╗██╔╝ ██╗
-╚══════╝╚═╝  ╚═╝ ╚═════╝      ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝
-    """
-    print(banner)
-    print(f"╔{'═'*60}╗")
-    print(f"║ {BOT_DISPLAY_NAME:<58} ║")
-    print(f"║ {'-'*58} ║")
-    print(f"║ 🤖 Bot Status: RUNNING {' ':<38} ║")
-    print(f"║ 👑 Admin ID: {ADMIN_ID:<44} ║")
-    print(f"║ 📢 Channels: {len(CHANNELS)} configured {' ':<37} ║")
-    print(f"║ 💬 Group Chat: {'ENABLED' if settings_data.get('group_chat_enabled') else 'DISABLED':<42} ║")
-    print(f"║ 📁 Total Files: {len(files_data):<41} ║")
-    print(f"║ 🔗 Total Links: {len(links_data):<41} ║")
-    print(f"║ 👥 Total Users: {len(users_data):<41} ║")
-    print(f"╚{'═'*60}╝")
-    print("\n📝 Press Ctrl+C to stop the bot\n")
+# Flask web interface
+app = Flask(__name__)
+
+# HTML template for the dashboard
+DASHBOARD_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Bot Monitoring Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #666;
+            font-size: 1.1em;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .stat-card h3 {
+            color: #666;
+            font-size: 1em;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .stat-card .value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .stat-card .label {
+            color: #999;
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+        
+        .card-primary { border-top: 5px solid #667eea; }
+        .card-success { border-top: 5px solid #48bb78; }
+        .card-warning { border-top: 5px solid #ecc94b; }
+        .card-danger { border-top: 5px solid #f56565; }
+        
+        .content-section {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        
+        .section-title {
+            font-size: 1.5em;
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        
+        .table-responsive {
+            overflow-x: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th {
+            background: #f7fafc;
+            color: #4a5568;
+            font-weight: 600;
+            padding: 12px;
+            text-align: left;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #e2e8f0;
+            color: #4a5568;
+        }
+        
+        tr:hover {
+            background: #f7fafc;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+        
+        .badge-success { background: #c6f6d5; color: #22543d; }
+        .badge-warning { background: #feebc8; color: #7b341e; }
+        .badge-info { background: #bee3f8; color: #1e4a6b; }
+        
+        .refresh-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 1em;
+            margin-bottom: 20px;
+            transition: background 0.3s ease;
+        }
+        
+        .refresh-btn:hover {
+            background: #5a67d8;
+        }
+        
+        .footer {
+            text-align: center;
+            color: white;
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 15px;
+        }
+        
+        .footer a {
+            color: white;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        
+        .footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 {{ bot_name }} Dashboard</h1>
+            <p>Bot Monitoring & Statistics</p>
+            <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card card-primary">
+                <h3>📁 Total Files</h3>
+                <div class="value">{{ total_files }}</div>
+                <div class="label">Hosted files</div>
+            </div>
+            
+            <div class="stat-card card-success">
+                <h3>🔗 Total Links</h3>
+                <div class="value">{{ total_links }}</div>
+                <div class="label">Generated links</div>
+            </div>
+            
+            <div class="stat-card card-warning">
+                <h3>👥 Total Users</h3>
+                <div class="value">{{ total_users }}</div>
+                <div class="label">Registered users</div>
+            </div>
+            
+            <div class="stat-card card-danger">
+                <h3>📥 Downloads</h3>
+                <div class="value">{{ total_downloads }}</div>
+                <div class="label">File downloads</div>
+            </div>
+            
+            <div class="stat-card card-primary">
+                <h3>⏰ Uptime</h3>
+                <div class="value">{{ uptime }}</div>
+                <div class="label">Bot running time</div>
+            </div>
+            
+            <div class="stat-card card-success">
+                <h3>📊 Channels</h3>
+                <div class="value">{{ total_channels }}</div>
+                <div class="label">Verification channels</div>
+            </div>
+        </div>
+        
+        <div class="content-section">
+            <h2 class="section-title">📁 Recent Files</h2>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>File Name</th>
+                            <th>Type</th>
+                            <th>Downloads</th>
+                            <th>Date Added</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for file in recent_files %}
+                        <tr>
+                            <td>{{ file.name }}</td>
+                            <td><span class="badge badge-info">{{ file.file_type }}</span></td>
+                            <td><span class="badge badge-success">{{ file.downloads }}</span></td>
+                            <td>{{ file.date }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div class="content-section">
+            <h2 class="section-title">🔗 Recent Links</h2>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Link ID</th>
+                            <th>File</th>
+                            <th>Created</th>
+                            <th>Clicks</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for link in recent_links %}
+                        <tr>
+                            <td><span class="badge badge-warning">{{ link.link_id }}</span></td>
+                            <td>{{ link.file_name }}</td>
+                            <td>{{ link.created }}</td>
+                            <td><span class="badge badge-success">{{ link.clicks }}</span></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div class="content-section">
+            <h2 class="section-title">👥 Recent Users</h2>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>User ID</th>
+                            <th>Username</th>
+                            <th>First Name</th>
+                            <th>First Seen</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for user in recent_users %}
+                        <tr>
+                            <td><span class="badge badge-info">{{ user.user_id }}</span></td>
+                            <td>@{{ user.username }}</td>
+                            <td>{{ user.first_name }}</td>
+                            <td>{{ user.first_seen }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>🤖 {{ bot_name }} | Powered by Flask & Python Telegram Bot</p>
+            <p><a href="/api/stats">📊 View API Stats (JSON)</a></p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+@app.route('/')
+def dashboard():
+    """Render the dashboard."""
+    recent_files_list = []
+    for file_id, file_data in list(files_data.items())[:10]:
+        recent_files_list.append({
+            'name': file_data.get('name', 'Unknown'),
+            'file_type': file_data.get('file_type', 'unknown'),
+            'downloads': file_data.get('downloads', 0),
+            'date': file_data.get('date', 'Unknown')
+        })
+    
+    recent_links_list = []
+    for link_id, link_data in list(links_data.items())[:10]:
+        file_id = link_data.get('file_id', '')
+        file_name = files_data.get(file_id, {}).get('name', 'Unknown') if file_id else 'Unknown'
+        recent_links_list.append({
+            'link_id': link_id[:8] + '...',
+            'file_name': file_name,
+            'created': link_data.get('created', 'Unknown'),
+            'clicks': link_data.get('clicks', 0)
+        })
+    
+    recent_users_list = []
+    for user_id, user_data in list(users_data.items())[:10]:
+        recent_users_list.append({
+            'user_id': user_id,
+            'username': user_data.get('username', 'N/A'),
+            'first_name': user_data.get('first_name', 'Unknown'),
+            'first_seen': user_data.get('first_seen', 'Unknown')
+        })
+    
+    total_downloads = sum(file_data.get('downloads', 0) for file_data in files_data.values())
+    
+    return render_template_string(
+        DASHBOARD_TEMPLATE,
+        bot_name=BOT_DISPLAY_NAME,
+        total_files=len(files_data),
+        total_links=len(links_data),
+        total_users=len(users_data),
+        total_downloads=total_downloads,
+        total_channels=len(CHANNELS),
+        uptime=get_uptime(),
+        recent_files=recent_files_list,
+        recent_links=recent_links_list,
+        recent_users=recent_users_list
+    )
+
+@app.route('/api/stats')
+def api_stats():
+    """Return JSON stats for API."""
+    total_downloads = sum(file_data.get('downloads', 0) for file_data in files_data.values())
+    
+    return jsonify({
+        'bot_name': BOT_DISPLAY_NAME,
+        'stats': {
+            'total_files': len(files_data),
+            'total_links': len(links_data),
+            'total_users': len(users_data),
+            'total_downloads': total_downloads,
+            'total_channels': len(CHANNELS),
+            'uptime': get_uptime(),
+            'uptime_seconds': int(time.time() - BOT_START_TIME)
+        },
+        'channels': [
+            {'name': CHANNELS[i], 'display_name': CHANNEL_DISPLAY_NAMES[i]} 
+            for i in range(len(CHANNELS))
+        ],
+        'settings': {
+            'group_chat_enabled': settings_data.get('group_chat_enabled', False),
+            'allowed_groups': settings_data.get('allowed_groups', [])
+        }
+    })
+
+@app.route('/api/files')
+def api_files():
+    """Return files data as JSON."""
+    files_list = []
+    for file_id, file_data in files_data.items():
+        files_list.append({
+            'id': file_id,
+            'name': file_data.get('name', 'Unknown'),
+            'type': file_data.get('file_type', 'unknown'),
+            'downloads': file_data.get('downloads', 0),
+            'date': file_data.get('date', 'Unknown')
+        })
+    return jsonify(files_list)
+
+@app.route('/api/links')
+def api_links():
+    """Return links data as JSON."""
+    links_list = []
+    for link_id, link_data in links_data.items():
+        file_id = link_data.get('file_id', '')
+        file_name = files_data.get(file_id, {}).get('name', 'Unknown') if file_id else 'Unknown'
+        links_list.append({
+            'id': link_id,
+            'file_id': file_id,
+            'file_name': file_name,
+            'created': link_data.get('created', 'Unknown'),
+            'clicks': link_data.get('clicks', 0),
+            'url': f"https://t.me/{BOT_USERNAME}?start={link_id}"
+        })
+    return jsonify(links_list)
+
+@app.route('/api/users')
+def api_users():
+    """Return users data as JSON."""
+    users_list = []
+    for user_id, user_data in users_data.items():
+        users_list.append({
+            'id': user_id,
+            'username': user_data.get('username', 'N/A'),
+            'first_name': user_data.get('first_name', 'Unknown'),
+            'last_name': user_data.get('last_name', 'N/A'),
+            'first_seen': user_data.get('first_seen', 'Unknown')
+        })
+    return jsonify(users_list)
+
+def run_flask():
+    """Run Flask server in a separate thread."""
+    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False, use_reloader=False)
 
 # Admin keyboard with styled buttons
 def get_admin_keyboard():
@@ -1700,9 +2142,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def main():
-    """Start the bot."""
-    clear_terminal()
-    show_banner()
+    """Start the bot and Flask server."""
+    print("🚀 Starting Bot with Flask Monitoring...")
+    print(f"📊 Flask dashboard will be available at: http://{FLASK_HOST}:{FLASK_PORT}")
+    print(f"📡 API endpoint: http://{FLASK_HOST}:{FLASK_PORT}/api/stats")
+    print("="*50)
+    
+    # Start Flask in a separate thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
     
     application = Application.builder().token(BOT_TOKEN).build()
     
