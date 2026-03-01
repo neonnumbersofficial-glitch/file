@@ -1,20 +1,15 @@
 import logging
 import asyncio
 import secrets
-import threading
-import time
-import signal
-import sys
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ChatMember
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-from telegram.error import Conflict, TelegramError
-from flask import Flask, render_template_string, jsonify, request
 import json
 import os
-
-# Flask app for web dashboard and keep-alive
-app = Flask(__name__)
+import sys
+from threading import Thread
+from flask import Flask, jsonify
+import requests
 
 # Logging setup
 logging.basicConfig(
@@ -23,8 +18,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Flask app for keep-alive
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def home():
+    return jsonify({
+        "status": "running",
+        "bot": BOT_DISPLAY_NAME,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "stats": {
+            "total_files": len(files_data),
+            "total_links": len(links_data),
+            "total_users": len(users_data)
+        }
+    })
+
+@flask_app.route('/health')
+def health():
+    return jsonify({"status": "healthy"})
+
+def run_flask():
+    """Run Flask app in a separate thread"""
+    flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False, use_reloader=False)
+
 # Bot Configuration
-BOT_TOKEN = "8587129513:AAH7WIce5I7fbgg0U2FphCQAwgOMy5-MtfA"
+BOT_TOKEN = "8587129513:AAGn3x7N5mGp4RZFjKRTur5mlXfHpL_7R14"
 ADMIN_ID = 8469461108
 BOT_USERNAME = "EXUBOTAI_1BOT"  # Plain text for URLs
 
@@ -33,7 +52,6 @@ BOT_DISPLAY_NAME = "𝐑𝐑𝐂 <𝐊> 𝐄𝐗𝐔 | 𝐗𝐒𝐔"
 
 # Channels to verify (format: @channel_username or channel ID)
 CHANNELS = [
-    "@exulive",
     "@exucoder1",
     "@funcodex"
 ]
@@ -42,7 +60,6 @@ CHANNELS = [
 CHANNEL_DISPLAY_NAMES = [
     "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟏",
     "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟐", 
-    "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟑"
 ]
 
 # Allowed groups for bot to respond (empty list means no groups allowed)
@@ -62,11 +79,13 @@ def load_json_file(filename, default_data):
             with open(filename, 'r') as f:
                 return json.load(f)
         else:
+            # Create file with default data
             with open(filename, 'w') as f:
                 json.dump(default_data, f)
             return default_data
     except (json.JSONDecodeError, FileNotFoundError) as e:
         logger.error(f"Error loading {filename}: {e}. Creating new file.")
+        # File is corrupted, create new one
         with open(filename, 'w') as f:
             json.dump(default_data, f)
         return default_data
@@ -77,12 +96,8 @@ links_data = load_json_file(LINKS_DATA_FILE, {})
 users_data = load_json_file(USERS_DATA_FILE, {})
 settings_data = load_json_file(SETTINGS_DATA_FILE, {
     "allowed_groups": [],
-    "group_chat_enabled": False,
-    "bot_uptime": datetime.now().isoformat()
+    "group_chat_enabled": False
 })
-
-# Track bot start time
-BOT_START_TIME = datetime.now()
 
 def generate_unique_id():
     """Generate unique ID for files."""
@@ -137,9 +152,9 @@ def show_banner():
     print(f"║ 📁 Total Files: {len(files_data):<41} ║")
     print(f"║ 🔗 Total Links: {len(links_data):<41} ║")
     print(f"║ 👥 Total Users: {len(users_data):<41} ║")
+    print(f"║ 🌐 Flask Server: RUNNING on port {os.environ.get('PORT', 8080):<33} ║")
     print(f"╚{'═'*60}╝")
     print("\n📝 Press Ctrl+C to stop the bot\n")
-    print("🌐 Web Dashboard: http://localhost:5000 (or your deployed URL)")
 
 # Admin keyboard with styled buttons
 def get_admin_keyboard():
@@ -160,419 +175,6 @@ def get_user_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# ==================== FLASK WEB DASHBOARD ====================
-
-DASHBOARD_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ bot_name }} Dashboard</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-        
-        body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 30px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            text-align: center;
-        }
-        
-        .header h1 {
-            color: #333;
-            font-size: 2.5em;
-            margin-bottom: 10px;
-        }
-        
-        .header p {
-            color: #666;
-            font-size: 1.2em;
-        }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        
-        .stat-card {
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-            transition: transform 0.3s ease;
-        }
-        
-        .stat-card:hover {
-            transform: translateY(-5px);
-        }
-        
-        .stat-card h3 {
-            color: #666;
-            font-size: 1.1em;
-            margin-bottom: 10px;
-        }
-        
-        .stat-card .number {
-            color: #333;
-            font-size: 2.5em;
-            font-weight: bold;
-        }
-        
-        .stat-card .icon {
-            font-size: 3em;
-            margin-bottom: 10px;
-        }
-        
-        .channels-section {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 30px;
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-        }
-        
-        .channels-section h2 {
-            color: #333;
-            margin-bottom: 20px;
-        }
-        
-        .channel-list {
-            list-style: none;
-        }
-        
-        .channel-item {
-            display: flex;
-            align-items: center;
-            padding: 15px;
-            border-bottom: 1px solid #eee;
-        }
-        
-        .channel-item:last-child {
-            border-bottom: none;
-        }
-        
-        .channel-status {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            margin-right: 15px;
-        }
-        
-        .status-active {
-            background: #4CAF50;
-        }
-        
-        .channel-name {
-            flex: 1;
-            font-size: 1.1em;
-        }
-        
-        .channel-link {
-            color: #667eea;
-            text-decoration: none;
-            padding: 5px 15px;
-            border: 1px solid #667eea;
-            border-radius: 5px;
-            transition: all 0.3s ease;
-        }
-        
-        .channel-link:hover {
-            background: #667eea;
-            color: white;
-        }
-        
-        .files-section {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 30px;
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
-        }
-        
-        .files-section h2 {
-            color: #333;
-            margin-bottom: 20px;
-        }
-        
-        .files-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        .files-table th,
-        .files-table td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        
-        .files-table th {
-            background: #f5f5f5;
-            color: #666;
-            font-weight: 600;
-        }
-        
-        .files-table tr:hover {
-            background: #f9f9f9;
-        }
-        
-        .link-btn {
-            background: #667eea;
-            color: white;
-            border: none;
-            padding: 5px 10px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 0.9em;
-        }
-        
-        .link-btn:hover {
-            background: #764ba2;
-        }
-        
-        .footer {
-            text-align: center;
-            color: white;
-            margin-top: 30px;
-        }
-        
-        .footer a {
-            color: white;
-            text-decoration: none;
-            font-weight: bold;
-        }
-        
-        .refresh-btn {
-            background: white;
-            color: #667eea;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 1em;
-            margin-top: 20px;
-            transition: all 0.3s ease;
-        }
-        
-        .refresh-btn:hover {
-            background: #f0f0f0;
-            transform: scale(1.05);
-        }
-        
-        @media (max-width: 768px) {
-            .header h1 {
-                font-size: 2em;
-            }
-            
-            .stat-card .number {
-                font-size: 2em;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🤖 {{ bot_name }}</h1>
-            <p>Telegram Bot Dashboard</p>
-            <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
-        </div>
-        
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="icon">📁</div>
-                <h3>Total Files</h3>
-                <div class="number">{{ stats.total_files }}</div>
-            </div>
-            
-            <div class="stat-card">
-                <div class="icon">🔗</div>
-                <h3>Total Links</h3>
-                <div class="number">{{ stats.total_links }}</div>
-            </div>
-            
-            <div class="stat-card">
-                <div class="icon">📥</div>
-                <h3>Total Downloads</h3>
-                <div class="number">{{ stats.total_downloads }}</div>
-            </div>
-            
-            <div class="stat-card">
-                <div class="icon">👥</div>
-                <h3>Total Users</h3>
-                <div class="number">{{ stats.total_users }}</div>
-            </div>
-        </div>
-        
-        <div class="channels-section">
-            <h2>📢 Required Channels</h2>
-            <ul class="channel-list">
-                {% for channel in channels %}
-                <li class="channel-item">
-                    <div class="channel-status status-active"></div>
-                    <span class="channel-name">{{ channel.display_name }}</span>
-                    <a href="https://t.me/{{ channel.username }}" target="_blank" class="channel-link">Join</a>
-                </li>
-                {% endfor %}
-            </ul>
-        </div>
-        
-        <div class="files-section">
-            <h2>📁 Recent Files</h2>
-            <table class="files-table">
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>File Name</th>
-                        <th>Type</th>
-                        <th>Downloads</th>
-                        <th>Date</th>
-                        <th>Link</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for file in recent_files %}
-                    <tr>
-                        <td>{{ loop.index }}</td>
-                        <td>{{ file.name }}</td>
-                        <td>{{ file.type }}</td>
-                        <td>{{ file.downloads }}</td>
-                        <td>{{ file.date }}</td>
-                        <td>
-                            <button class="link-btn" onclick="copyLink('{{ file.link }}')">Copy Link</button>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        
-        <div class="footer">
-            <p>⚡ Powered by <a href="#">{{ bot_name }}</a> | Uptime: {{ uptime }}</p>
-        </div>
-    </div>
-    
-    <script>
-        function copyLink(link) {
-            navigator.clipboard.writeText(link).then(function() {
-                alert('Link copied to clipboard!');
-            }, function() {
-                alert('Failed to copy link');
-            });
-        }
-        
-        // Auto refresh every 30 seconds
-        setTimeout(function() {
-            location.reload();
-        }, 30000);
-    </script>
-</body>
-</html>
-"""
-
-@app.route('/')
-def dashboard():
-    """Main dashboard page."""
-    uptime_delta = datetime.now() - BOT_START_TIME
-    days = uptime_delta.days
-    hours = uptime_delta.seconds // 3600
-    minutes = (uptime_delta.seconds % 3600) // 60
-    uptime_str = f"{days}d {hours}h {minutes}m"
-    
-    recent_files = []
-    for file_id, file_data in list(files_data.items())[-10:]:
-        link_id = None
-        for lid, ldata in links_data.items():
-            if ldata["file_id"] == file_id:
-                link_id = lid
-                break
-        
-        link_url = f"https://t.me/{BOT_USERNAME}?start={link_id}" if link_id else "#"
-        
-        recent_files.append({
-            "name": file_data.get('name', 'Unknown'),
-            "type": file_data.get('file_type', 'Unknown'),
-            "downloads": file_data.get('downloads', 0),
-            "date": file_data.get('date', 'Unknown'),
-            "link": link_url
-        })
-    
-    channel_data = []
-    for i, channel in enumerate(CHANNELS):
-        channel_data.append({
-            "display_name": CHANNEL_DISPLAY_NAMES[i],
-            "username": channel.replace('@', '')
-        })
-    
-    total_downloads = sum(file_data.get('downloads', 0) for file_data in files_data.values())
-    
-    stats = {
-        "total_files": len(files_data),
-        "total_links": len(links_data),
-        "total_downloads": total_downloads,
-        "total_users": len(users_data)
-    }
-    
-    return render_template_string(
-        DASHBOARD_TEMPLATE,
-        bot_name=BOT_DISPLAY_NAME,
-        stats=stats,
-        channels=channel_data,
-        recent_files=recent_files,
-        uptime=uptime_str
-    )
-
-@app.route('/api/stats')
-def api_stats():
-    """API endpoint for stats."""
-    total_downloads = sum(file_data.get('downloads', 0) for file_data in files_data.values())
-    return jsonify({
-        "total_files": len(files_data),
-        "total_links": len(links_data),
-        "total_downloads": total_downloads,
-        "total_users": len(users_data),
-        "channels": len(CHANNELS),
-        "group_chat_enabled": settings_data.get("group_chat_enabled", False)
-    })
-
-@app.route('/health')
-def health():
-    """Health check endpoint for keep-alive."""
-    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
-
-@app.route('/ping')
-def ping():
-    """Simple ping endpoint."""
-    return "pong"
-
-def run_flask():
-    """Run Flask app in a separate thread."""
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-
-# ==================== TELEGRAM BOT CODE ====================
-
 async def check_group_permission(update: Update) -> bool:
     """Check if bot should respond in this group."""
     if update.effective_chat.type == "private":
@@ -590,38 +192,87 @@ async def check_group_permission(update: Update) -> bool:
     
     return True
 
-async def check_channel_subscription(user_id: int, channel: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if user is subscribed to a specific channel."""
-    try:
-        chat_member = await context.bot.get_chat_member(
-            chat_id=channel,
-            user_id=user_id
-        )
-        logger.info(f"User {user_id} is {chat_member.status} in {channel}")
-        
-        # Check if user is member, administrator, creator (all valid states)
-        if chat_member.status in ['left', 'kicked']:
-            return False
-        return True
-    except TelegramError as e:
-        logger.error(f"Error checking channel {channel}: {e}")
-        # If bot can't check channel, assume not subscribed for security
-        return False
-
 async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Check if user is subscribed to all channels."""
-    for channel in CHANNELS:
-        if not await check_channel_subscription(user_id, channel, context):
-            return False
-    return True
+    try:
+        for channel in CHANNELS:
+            try:
+                chat_member = await context.bot.get_chat_member(
+                    chat_id=channel,
+                    user_id=user_id
+                )
+                # Check if user is member, administrator, creator
+                if chat_member.status in ['left', 'kicked']:
+                    logger.info(f"User {user_id} not subscribed to {channel}")
+                    return False
+                logger.info(f"User {user_id} is {chat_member.status} in {channel}")
+            except Exception as e:
+                logger.error(f"Error checking channel {channel}: {e}")
+                return False
+        return True
+    except Exception as e:
+        logger.error(f"Error checking subscription: {e}")
+        return False
 
 async def get_unjoined_channels(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Get list of channels user hasn't joined yet."""
     unjoined = []
     for channel in CHANNELS:
-        if not await check_channel_subscription(user_id, channel, context):
-            unjoined.append(channel)
+        try:
+            chat_member = await context.bot.get_chat_member(
+                chat_id=channel,
+                user_id=user_id
+            )
+            logger.info(f"User {user_id} is {chat_member.status} in {channel}")
+            if chat_member.status in ['left', 'kicked']:
+                unjoined.append(channel)
+        except Exception as e:
+            logger.error(f"Error checking channel {channel}: {e}")
+            unjoined.append(channel)  # If can't check, assume not joined
     return unjoined
+
+async def notify_admin_channel_join(user_id: int, username: str, first_name: str, context: ContextTypes.DEFAULT_TYPE):
+    """Notify admin when a user joins a channel"""
+    try:
+        # Check if user has joined all channels now
+        all_joined = True
+        joined_channels = []
+        
+        for i, channel in enumerate(CHANNELS):
+            try:
+                chat_member = await context.bot.get_chat_member(
+                    chat_id=channel,
+                    user_id=user_id
+                )
+                if chat_member.status not in ['left', 'kicked']:
+                    joined_channels.append(CHANNEL_DISPLAY_NAMES[i])
+                else:
+                    all_joined = False
+            except:
+                all_joined = False
+        
+        # Send notification to admin
+        notification = (
+            f"📢 𝐍𝐞𝐰 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝐉𝐨𝐢𝐧 𝐃𝐞𝐭𝐞𝐜𝐭𝐞𝐝!\n\n"
+            f"👤 𝐔𝐬𝐞𝐫: {first_name}\n"
+            f"🆔 𝐔𝐬𝐞𝐫 𝐈𝐃: {user_id}\n"
+            f"📛 𝐔𝐬𝐞𝐫𝐧𝐚𝐦𝐞: @{username if username else '𝐍𝐨𝐭 𝐬𝐞𝐭'}\n"
+            f"📊 𝐒𝐭𝐚𝐭𝐮𝐬: {'✅ 𝐀𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐣𝐨𝐢𝐧𝐞𝐝' if all_joined else '⚠️ 𝐏𝐚𝐫𝐭𝐢𝐚𝐥 𝐣𝐨𝐢𝐧'}\n\n"
+        )
+        
+        if joined_channels:
+            notification += "📋 𝐉𝐨𝐢𝐧𝐞𝐝 𝐂𝐡𝐚𝐧𝐧𝐞𝐥𝐬:\n"
+            for channel in joined_channels:
+                notification += f"• {channel}\n"
+        
+        notification += f"\n🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
+        
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=notification
+        )
+    except Exception as e:
+        logger.error(f"Error notifying admin: {e}")
 
 async def force_subscription_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Force subscription check - returns True if user is subscribed, False otherwise."""
@@ -639,13 +290,16 @@ async def force_subscription_check(update: Update, context: ContextTypes.DEFAULT
         unjoined_channels = await get_unjoined_channels(user_id, context)
         unjoined_indices = [CHANNELS.index(ch) for ch in unjoined_channels if ch in CHANNELS]
         
+        # Notify admin about partial join
+        user = update.effective_user
+        await notify_admin_channel_join(user_id, user.username, user.first_name, context)
+        
         # Create subscription keyboard
         keyboard = []
         for idx in unjoined_indices:
-            channel_username = CHANNELS[idx].replace('@', '')
             keyboard.append([InlineKeyboardButton(
                 f"📢 𝐉𝐨𝐢𝐧 {CHANNEL_DISPLAY_NAMES[idx]}",
-                url=f"https://t.me/{channel_username}"
+                url=f"https://t.me/{CHANNELS[idx].replace('@', '')}"
             )])
         
         keyboard.append([InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧", callback_data="verify_subscription")])
@@ -654,6 +308,7 @@ async def force_subscription_check(update: Update, context: ContextTypes.DEFAULT
         total_channels = len(CHANNELS)
         joined_count = total_channels - len(unjoined_indices)
         
+        # NO HTML TAGS - just plain text with Unicode bold
         await update.message.reply_text(
             f"🚫 𝐀𝐜𝐜𝐞𝐬𝐬 𝐃𝐞𝐧𝐢𝐞𝐝!\n\n"
             f"📊 𝐏𝐫𝐨𝐠𝐫𝐞𝐬𝐬: {joined_count}/{total_channels} 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐣𝐨𝐢𝐧𝐞𝐝\n\n"
@@ -662,6 +317,10 @@ async def force_subscription_check(update: Update, context: ContextTypes.DEFAULT
             reply_markup=reply_markup
         )
         return False
+    else:
+        # User has joined all channels, notify admin
+        user = update.effective_user
+        await notify_admin_channel_join(user_id, user.username, user.first_name, context)
     
     return True
 
@@ -704,6 +363,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         greeting = "𝐆𝐨𝐨𝐝 𝐄𝐯𝐞𝐧𝐢𝐧𝐠"
     
+    # Professional welcome message - NO HTML TAGS, just Unicode bold
     welcome_text = (
         f"╔═══《 🎉 {greeting}! 》═══╗\n\n"
         f"👤 𝐔𝐬𝐞𝐫: {user.first_name}\n"
@@ -725,11 +385,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 📁 𝐌𝐲 𝐅𝐢𝐥𝐞𝐬 𝐭𝐨 𝐯𝐢𝐞𝐰 𝐚𝐜𝐜𝐞𝐬𝐬𝐞𝐝 𝐟𝐢𝐥𝐞𝐬"
     )
     
+    # Set appropriate keyboard based on user
     if user_id == ADMIN_ID:
         reply_markup = get_admin_keyboard()
     else:
         reply_markup = get_user_keyboard()
     
+    # Send without HTML parsing
     await update.message.reply_text(
         welcome_text,
         reply_markup=reply_markup
@@ -737,11 +399,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE, link_id: str):
     """Handle file link access - STRICT SUBSCRIPTION CHECK."""
+    # Check group permission
     if not await check_group_permission(update):
         return
     
     user_id = update.effective_user.id
     
+    # FORCE SUBSCRIPTION CHECK - User MUST join channels first
     if not await force_subscription_check(update, context):
         return
     
@@ -763,11 +427,14 @@ async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE, l
         )
         return
     
+    # Send the file
     await send_file_to_user(update, file_id)
     
+    # Track download
     files_data[file_id]["downloads"] = files_data[file_id].get("downloads", 0) + 1
     save_files_data()
     
+    # Add to user's accessed files
     user_files = files_data[file_id].get("accessed_by", {})
     if str(user_id) not in user_files:
         user_files[str(user_id)] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -788,6 +455,10 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unjoined_indices = [CHANNELS.index(ch) for ch in unjoined_channels if ch in CHANNELS]
         
         if not unjoined_indices:
+            # Notify admin that user completed all joins
+            user = query.from_user
+            await notify_admin_channel_join(user_id, user.username, user.first_name, context)
+            
             await query.edit_message_text(
                 f"✅ 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧 𝐕𝐞𝐫𝐢𝐟𝐢𝐞𝐝!\n\n"
                 f"𝐍𝐨𝐰 𝐲𝐨𝐮 𝐜𝐚𝐧 𝐚𝐜𝐜𝐞𝐬𝐬 𝐚𝐥𝐥 𝐟𝐢𝐥𝐞𝐬.\n"
@@ -825,6 +496,10 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         unjoined_indices = [CHANNELS.index(ch) for ch in unjoined_channels if ch in CHANNELS]
         
         if not unjoined_indices:
+            # Notify admin that user completed all joins
+            user = query.from_user
+            await notify_admin_channel_join(user_id, user.username, user.first_name, context)
+            
             file_id = links_data[link_id]["file_id"]
             
             if file_id not in files_data:
@@ -839,11 +514,14 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
             )
             
+            # Send the file
             await send_file_to_user_callback(query, file_id)
             
+            # Track download
             files_data[file_id]["downloads"] = files_data[file_id].get("downloads", 0) + 1
             save_files_data()
             
+            # Add to user's accessed files
             user_files = files_data[file_id].get("accessed_by", {})
             if str(user_id) not in user_files:
                 user_files[str(user_id)] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -886,10 +564,9 @@ async def ask_for_subscription_callback(query, context: ContextTypes.DEFAULT_TYP
     keyboard = []
     
     for idx in unjoined_indices:
-        channel_username = CHANNELS[idx].replace('@', '')
         keyboard.append([InlineKeyboardButton(
             f"📢 𝐉𝐨𝐢𝐧 {CHANNEL_DISPLAY_NAMES[idx]}",
-            url=f"https://t.me/{channel_username}"
+            url=f"https://t.me/{CHANNELS[idx].replace('@', '')}"
         )])
     
     keyboard.append([InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧", callback_data="verify_subscription")])
@@ -918,12 +595,15 @@ async def ask_for_subscription_with_file_callback(query, context: ContextTypes.D
         unjoined_indices = [CHANNELS.index(ch) for ch in unjoined_channels if ch in CHANNELS]
     
     if not unjoined_indices:
+        # User has joined all channels, send file directly
         file_id = links_data[link_id]["file_id"]
         await send_file_to_user_callback(query, file_id)
         
+        # Track download
         files_data[file_id]["downloads"] = files_data[file_id].get("downloads", 0) + 1
         save_files_data()
         
+        # Add to user's accessed files
         user_files = files_data[file_id].get("accessed_by", {})
         if str(user_id) not in user_files:
             user_files[str(user_id)] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -934,10 +614,9 @@ async def ask_for_subscription_with_file_callback(query, context: ContextTypes.D
     keyboard = []
     
     for idx in unjoined_indices:
-        channel_username = CHANNELS[idx].replace('@', '')
         keyboard.append([InlineKeyboardButton(
             f"📢 𝐉𝐨𝐢𝐧 {CHANNEL_DISPLAY_NAMES[idx]}",
-            url=f"https://t.me/{channel_username}"
+            url=f"https://t.me/{CHANNELS[idx].replace('@', '')}"
         )])
     
     keyboard.append([InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲 & 𝐆𝐞𝐭 𝐅𝐢𝐥𝐞", callback_data=f"verify_file_{link_id}")])
@@ -1070,6 +749,7 @@ async def admin_generate_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
     
+    # Create keyboard with file list
     keyboard = []
     files_list = list(files_data.items())
     
@@ -1120,6 +800,7 @@ async def admin_files_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     files_list_text += f"━━━━━━━━━━━━━━━━━━━━━━\n🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
     
+    # Add generate link button
     keyboard = [[InlineKeyboardButton("🔗 𝐆𝐞𝐧𝐞𝐫𝐚𝐭𝐞 𝐋𝐢𝐧𝐤", callback_data="generate_link_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -1231,16 +912,15 @@ async def admin_content_manager(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ 𝐘𝐨𝐮 𝐚𝐫𝐞 𝐧𝐨𝐭 𝐚𝐮𝐭𝐡𝐨𝐫𝐢𝐳𝐞𝐝!")
         return
     
-    keyboard = []
-    
-    if files_data:
-        keyboard.append([InlineKeyboardButton("📁 𝐕𝐢𝐞𝐰 𝐀𝐥𝐥 𝐅𝐢𝐥𝐞𝐬", callback_data="view_files_list")])
-        keyboard.append([InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐅𝐢𝐥𝐞", callback_data="delete_file_menu")])
-        keyboard.append([InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐀𝐥𝐥 𝐅𝐢𝐥𝐞𝐬", callback_data="delete_all_files")])
-    
-    if links_data:
-        keyboard.append([InlineKeyboardButton("🔗 𝐕𝐢𝐞𝐰 𝐀𝐥𝐥 𝐋𝐢𝐧𝐤𝐬", callback_data="view_links_list")])
-        keyboard.append([InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐀𝐥𝐥 𝐋𝐢𝐧𝐤𝐬", callback_data="delete_all_links")])
+    keyboard = [
+        [InlineKeyboardButton("📁 𝐕𝐢𝐞𝐰 𝐀𝐥𝐥 𝐅𝐢𝐥𝐞𝐬", callback_data="view_files_list")],
+        [InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐅𝐢𝐥𝐞 (𝐒𝐢𝐧𝐠𝐥𝐞)", callback_data="delete_file_menu")],
+        [InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐌𝐮𝐥𝐭𝐢𝐩𝐥𝐞 𝐅𝐢𝐥𝐞𝐬", callback_data="delete_multiple_files")],
+        [InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐀𝐥𝐥 𝐅𝐢𝐥𝐞𝐬", callback_data="delete_all_files")],
+        [InlineKeyboardButton("🔗 𝐕𝐢𝐞𝐰 𝐀𝐥𝐥 𝐋𝐢𝐧𝐤𝐬", callback_data="view_links_list")],
+        [InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐀𝐥𝐥 𝐋𝐢𝐧𝐤𝐬", callback_data="delete_all_links")],
+        [InlineKeyboardButton("🔙 𝐁𝐚𝐜𝐤", callback_data="content_manager_back")]
+    ]
     
     if not files_data and not links_data:
         await update.message.reply_text(
@@ -1295,6 +975,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
+    # FORCE SUBSCRIPTION CHECK - User must join channels first (except admin)
     if user_id != ADMIN_ID:
         if not await force_subscription_check(update, context):
             return
@@ -1307,6 +988,66 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ 𝐀𝐜𝐭𝐢𝐨𝐧 𝐜𝐚𝐧𝐜𝐞𝐥𝐞𝐝.",
             reply_markup=get_admin_keyboard() if user_id == ADMIN_ID else get_user_keyboard()
         )
+        return
+    
+    if context.user_data.get('awaiting_group_id'):
+        try:
+            group_id = int(message_text)
+            allowed_groups = settings_data.get("allowed_groups", [])
+            if group_id not in allowed_groups:
+                allowed_groups.append(group_id)
+                settings_data["allowed_groups"] = allowed_groups
+                save_settings_data()
+                await update.message.reply_text(
+                    f"✅ 𝐆𝐫𝐨𝐮𝐩 {group_id} 𝐚𝐝𝐝𝐞𝐝 𝐭𝐨 𝐚𝐥𝐥𝐨𝐰𝐞𝐝 𝐥𝐢𝐬𝐭.",
+                    reply_markup=get_admin_keyboard()
+                )
+            else:
+                await update.message.reply_text(
+                    f"⚠️ 𝐆𝐫𝐨𝐮𝐩 {group_id} 𝐢𝐬 𝐚𝐥𝐫𝐞𝐚𝐝𝐲 𝐢𝐧 𝐚𝐥𝐥𝐨𝐰𝐞𝐝 𝐥𝐢𝐬𝐭.",
+                    reply_markup=get_admin_keyboard()
+                )
+            context.user_data.pop('awaiting_group_id', None)
+        except ValueError:
+            await update.message.reply_text(
+                "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐠𝐫𝐨𝐮𝐩 𝐈𝐃. 𝐏𝐥𝐞𝐚𝐬𝐞 𝐬𝐞𝐧𝐝 𝐚 𝐧𝐮𝐦𝐛𝐞𝐫."
+            )
+        return
+    
+    if context.user_data.get('awaiting_delete_multiple'):
+        try:
+            indices = [int(x.strip()) for x in message_text.split(',')]
+            file_ids = list(files_data.keys())
+            
+            deleted_count = 0
+            for idx in indices:
+                if 1 <= idx <= len(file_ids):
+                    file_id = file_ids[idx-1]
+                    # Delete associated links
+                    links_to_delete = []
+                    for link_id, link_data in links_data.items():
+                        if link_data["file_id"] == file_id:
+                            links_to_delete.append(link_id)
+                    for link_id in links_to_delete:
+                        del links_data[link_id]
+                    
+                    # Delete file
+                    del files_data[file_id]
+                    deleted_count += 1
+            
+            save_files_data()
+            save_links_data()
+            
+            await update.message.reply_text(
+                f"✅ 𝐃𝐞𝐥𝐞𝐭𝐞𝐝 {deleted_count} 𝐟𝐢𝐥𝐞(𝐬) 𝐬𝐮𝐜𝐜𝐞𝐬𝐬𝐟𝐮𝐥𝐥𝐲!",
+                reply_markup=get_admin_keyboard()
+            )
+            context.user_data.pop('awaiting_delete_multiple', None)
+        except:
+            await update.message.reply_text(
+                "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐟𝐨𝐫𝐦𝐚𝐭. 𝐏𝐥𝐞𝐚𝐬𝐞 𝐬𝐞𝐧𝐝 𝐧𝐮𝐦𝐛𝐞𝐫𝐬 𝐥𝐢𝐤𝐞: 1,2,3",
+                reply_markup=get_admin_keyboard()
+            )
         return
     
     if context.user_data.get('broadcast_mode'):
@@ -1456,6 +1197,7 @@ async def user_my_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
+    # FORCE SUBSCRIPTION CHECK - User must join channels first
     if not await force_subscription_check(update, context):
         return
     
@@ -1827,6 +1569,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif callback_data == "delete_file_menu":
         await admin_delete_file_menu(query, context)
     
+    elif callback_data == "delete_multiple_files":
+        if user_id != ADMIN_ID:
+            return
+        
+        if not files_data:
+            await query.edit_message_text("📭 𝐍𝐨 𝐟𝐢𝐥𝐞𝐬 𝐭𝐨 𝐝𝐞𝐥𝐞𝐭𝐞!")
+            return
+        
+        files_list_text = "📋 𝐅𝐢𝐥𝐞𝐬 𝐟𝐨𝐫 𝐝𝐞𝐥𝐞𝐭𝐢𝐨𝐧:\n\n"
+        file_ids = list(files_data.keys())
+        
+        for i, file_id in enumerate(file_ids[:10], 1):
+            file_name = files_data[file_id].get('name', f"𝐅𝐢𝐥𝐞_{i}")
+            files_list_text += f"{i}. {file_name}\n"
+        
+        if len(file_ids) > 10:
+            files_list_text += f"\n(𝐒𝐡𝐨𝐰𝐢𝐧𝐠 𝐟𝐢𝐫𝐬𝐭 10 𝐨𝐟 {len(file_ids)} 𝐟𝐢𝐥𝐞𝐬)"
+        
+        files_list_text += "\n\n𝐏𝐥𝐞𝐚𝐬𝐞 𝐬𝐞𝐧𝐝 𝐭𝐡𝐞 𝐧𝐮𝐦𝐛𝐞𝐫𝐬 𝐨𝐟 𝐟𝐢𝐥𝐞𝐬 𝐭𝐨 𝐝𝐞𝐥𝐞𝐭𝐞 (𝐞.𝐠., 1,2,3):"
+        
+        await query.edit_message_text(files_list_text)
+        context.user_data['awaiting_delete_multiple'] = True
+    
     elif callback_data.startswith("delete_file_"):
         file_id = callback_data.replace("delete_file_", "")
         if file_id in files_data:
@@ -1867,6 +1632,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
             )
+    
+    elif callback_data == "content_manager_back":
+        if user_id != ADMIN_ID:
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("📁 𝐕𝐢𝐞𝐰 𝐀𝐥𝐥 𝐅𝐢𝐥𝐞𝐬", callback_data="view_files_list")],
+            [InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐅𝐢𝐥𝐞 (𝐒𝐢𝐧𝐠𝐥𝐞)", callback_data="delete_file_menu")],
+            [InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐌𝐮𝐥𝐭𝐢𝐩𝐥𝐞 𝐅𝐢𝐥𝐞𝐬", callback_data="delete_multiple_files")],
+            [InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐀𝐥𝐥 𝐅𝐢𝐥𝐞𝐬", callback_data="delete_all_files")],
+            [InlineKeyboardButton("🔗 𝐕𝐢𝐞𝐰 𝐀𝐥𝐥 𝐋𝐢𝐧𝐤𝐬", callback_data="view_links_list")],
+            [InlineKeyboardButton("🗑️ 𝐃𝐞𝐥𝐞𝐭𝐞 𝐀𝐥𝐥 𝐋𝐢𝐧𝐤𝐬", callback_data="delete_all_links")],
+            [InlineKeyboardButton("🔙 𝐁𝐚𝐜𝐤", callback_data="content_manager_back")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"📋 𝐂𝐨𝐧𝐭𝐞𝐧𝐭 𝐌𝐚𝐧𝐚𝐠𝐞𝐫\n\n"
+            f"📁 𝐓𝐨𝐭𝐚𝐥 𝐅𝐢𝐥𝐞𝐬: {len(files_data)}\n"
+            f"🔗 𝐓𝐨𝐭𝐚𝐥 𝐋𝐢𝐧𝐤𝐬: {len(links_data)}\n\n"
+            f"𝐒𝐞𝐥𝐞𝐜𝐭 𝐚𝐧 𝐨𝐩𝐭𝐢𝐨𝐧:",
+            reply_markup=reply_markup
+        )
     
     elif callback_data == "show_all_files":
         await show_all_files_callback(query, context)
@@ -1969,6 +1758,9 @@ async def admin_delete_file_menu(query, context: ContextTypes.DEFAULT_TYPE):
             callback_data=f"delete_file_{file_id}"
         )])
     
+    if len(files_data) > 10:
+        keyboard.append([InlineKeyboardButton("📋 𝐍𝐞𝐱𝐭 𝐏𝐚𝐠𝐞 (𝐂𝐨𝐦𝐢𝐧𝐠 𝐒𝐨𝐨𝐧)", callback_data="noop")])
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text(
@@ -2049,6 +1841,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
+    # FORCE SUBSCRIPTION CHECK - User must join channels first (except admin)
     if user_id != ADMIN_ID:
         if not await force_subscription_check(update, context):
             return
@@ -2062,7 +1855,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔗 𝐆𝐞𝐧𝐞𝐫𝐚𝐭𝐞 𝐋𝐢𝐧𝐤 - 𝐂𝐫𝐞𝐚𝐭𝐞 𝐬𝐡𝐚𝐫𝐞𝐚𝐛𝐥𝐞 𝐥𝐢𝐧𝐤𝐬\n"
             f"📊 𝐅𝐢𝐥𝐞𝐬 𝐋𝐢𝐬𝐭 - 𝐕𝐢𝐞𝐰 𝐚𝐥𝐥 𝐡𝐨𝐬𝐭𝐞𝐝 𝐟𝐢𝐥𝐞𝐬\n"
             f"📈 𝐒𝐭𝐚𝐭𝐬 - 𝐕𝐢𝐞𝐰 𝐛𝐨𝐭 𝐬𝐭𝐚𝐭𝐢𝐬𝐭𝐢𝐜𝐬\n"
-            f"📋 𝐂𝐨𝐧𝐭𝐞𝐧𝐭 𝐌𝐚𝐧𝐚𝐠𝐞𝐫 - 𝐌𝐚𝐧𝐚𝐠𝐞 𝐜𝐨𝐧𝐭𝐞𝐧𝐭\n"
+            f"📋 𝐂𝐨𝐧𝐭𝐞𝐧𝐭 𝐌𝐚𝐧𝐚𝐠𝐞𝐫 - 𝐌𝐚𝐧𝐚𝐠𝐞 𝐜𝐨𝐧𝐭𝐞𝐧𝐭 (𝐃𝐞𝐥𝐞𝐭𝐞 𝐟𝐢𝐥𝐞𝐬/𝐥𝐢𝐧𝐤𝐬)\n"
             f"📢 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭 - 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭 𝐦𝐞𝐬𝐬𝐚𝐠𝐞𝐬 𝐭𝐨 𝐚𝐥𝐥 𝐮𝐬𝐞𝐫𝐬\n"
             f"⚙️ 𝐒𝐞𝐭𝐭𝐢𝐧𝐠𝐬 - 𝐁𝐨𝐭 𝐬𝐞𝐭𝐭𝐢𝐧𝐠𝐬 (𝐠𝐫𝐨𝐮𝐩 𝐩𝐞𝐫𝐦𝐢𝐬𝐬𝐢𝐨𝐧𝐬)\n\n"
             f"𝐄𝐚𝐬𝐲 𝐅𝐢𝐥𝐞 𝐇𝐨𝐬𝐭𝐢𝐧𝐠:\n"
@@ -2071,6 +1864,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"𝟑. 𝐄𝐧𝐭𝐞𝐫 𝐟𝐢𝐥𝐞 𝐧𝐚𝐦𝐞\n"
             f"𝟒. 𝐄𝐧𝐭𝐞𝐫 𝐜𝐚𝐩𝐭𝐢𝐨𝐧 (𝐨𝐩𝐭𝐢𝐨𝐧𝐚𝐥)\n"
             f"𝟓. 𝐋𝐢𝐧𝐤 𝐚𝐮𝐭𝐨𝐦𝐚𝐭𝐢𝐜𝐚𝐥𝐥𝐲 𝐠𝐞𝐧𝐞𝐫𝐚𝐭𝐞𝐝\n\n"
+            f"𝐃𝐞𝐥𝐞𝐭𝐞 𝐎𝐩𝐭𝐢𝐨𝐧𝐬:\n"
+            f"• 𝐒𝐢𝐧𝐠𝐥𝐞 𝐅𝐢𝐥𝐞 𝐃𝐞𝐥𝐞𝐭𝐢𝐨𝐧\n"
+            f"• 𝐌𝐮𝐥𝐭𝐢𝐩𝐥𝐞 𝐅𝐢𝐥𝐞 𝐃𝐞𝐥𝐞𝐭𝐢𝐨𝐧\n"
+            f"• 𝐀𝐥𝐥 𝐅𝐢𝐥𝐞𝐬 𝐃𝐞𝐥𝐞𝐭𝐢𝐨𝐧\n"
+            f"• 𝐀𝐥𝐥 𝐋𝐢𝐧𝐤𝐬 𝐃𝐞𝐥𝐞𝐭𝐢𝐨𝐧\n\n"
+            f"𝐍𝐨𝐭𝐢𝐟𝐢𝐜𝐚𝐭𝐢𝐨𝐧𝐬:\n"
+            f"• 𝐑𝐞𝐜𝐞𝐢𝐯𝐞 𝐚𝐥𝐞𝐫𝐭𝐬 𝐰𝐡𝐞𝐧 𝐮𝐬𝐞𝐫𝐬 𝐣𝐨𝐢𝐧 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬\n\n"
             f"𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐬:\n"
             f"/𝐜𝐚𝐧𝐜𝐞𝐥 - 𝐂𝐚𝐧𝐜𝐞𝐥 𝐜𝐮𝐫𝐫𝐞𝐧𝐭 𝐚𝐜𝐭𝐢𝐨𝐧\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -2100,51 +1900,35 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-def run_bot():
-    """Run the Telegram bot in the main thread."""
-    try:
-        # Create the Application
-        application = Application.builder().token(BOT_TOKEN).build()
-        
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("host_text", admin_host_text))
-        application.add_handler(CommandHandler("stats", admin_stats))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("cancel", handle_message))
-        
-        application.add_handler(CallbackQueryHandler(verify_callback, pattern="^(verify_subscription|verify_file_)"))
-        application.add_handler(CallbackQueryHandler(handle_callback))
-        
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        application.add_handler(MessageHandler(
-            filters.PHOTO | filters.VIDEO | filters.Document.ALL, 
-            handle_file
-        ))
-        
-        # Run the bot
-        print("✅ Bot started successfully!")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-        
-    except Conflict as e:
-        print(f"❌ Conflict error: {e}")
-        print("⚠️ Another bot instance is already running!")
-        print("💡 Solution: Stop any other bot instances and try again")
-        print("   - Check if bot is running locally")
-        print("   - Check if bot is running on another server")
-        print("   - Wait 30 seconds for the other instance to timeout")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Unexpected error: {e}")
-        sys.exit(1)
-
-if __name__ == '__main__':
+def main():
+    """Start the bot."""
     clear_terminal()
     show_banner()
     
-    # Start Flask in a separate thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    # Start Flask server in a separate thread
+    flask_thread = Thread(target=run_flask)
+    flask_thread.daemon = True
     flask_thread.start()
     
-    # Run the bot in the main thread
-    run_bot()
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("host_text", admin_host_text))
+    application.add_handler(CommandHandler("stats", admin_stats))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("cancel", handle_message))
+    
+    application.add_handler(CallbackQueryHandler(verify_callback, pattern="^(verify_subscription|verify_file_)"))
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    application.add_handler(MessageHandler(
+        filters.PHOTO | filters.VIDEO | filters.Document.ALL, 
+        handle_file
+    ))
+    
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()
