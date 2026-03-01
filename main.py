@@ -1,15 +1,20 @@
 import logging
 import asyncio
 import secrets
-from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-import json
-import os
-import sys
-from flask import Flask, render_template_string, jsonify
 import threading
 import time
+import signal
+import sys
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, ChatMember
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.error import Conflict, TelegramError
+from flask import Flask, render_template_string, jsonify, request
+import json
+import os
+
+# Flask app for web dashboard and keep-alive
+app = Flask(__name__)
 
 # Logging setup
 logging.basicConfig(
@@ -28,8 +33,8 @@ BOT_DISPLAY_NAME = "𝐑𝐑𝐂 <𝐊> 𝐄𝐗𝐔 | 𝐗𝐒𝐔"
 
 # Channels to verify (format: @channel_username or channel ID)
 CHANNELS = [
+    "@exulive",
     "@exucoder1",
-    "@exufile",
     "@funcodex"
 ]
 
@@ -49,10 +54,6 @@ LINKS_DATA_FILE = "links_data.json"
 USERS_DATA_FILE = "users_data.json"
 SETTINGS_DATA_FILE = "settings_data.json"
 
-# Flask configuration
-FLASK_PORT = 5000
-FLASK_HOST = "0.0.0.0"  # Allow external connections
-
 # Initialize data files with proper error handling
 def load_json_file(filename, default_data):
     """Load JSON file with error handling."""
@@ -61,13 +62,11 @@ def load_json_file(filename, default_data):
             with open(filename, 'r') as f:
                 return json.load(f)
         else:
-            # Create file with default data
             with open(filename, 'w') as f:
                 json.dump(default_data, f)
             return default_data
     except (json.JSONDecodeError, FileNotFoundError) as e:
         logger.error(f"Error loading {filename}: {e}. Creating new file.")
-        # File is corrupted, create new one
         with open(filename, 'w') as f:
             json.dump(default_data, f)
         return default_data
@@ -78,11 +77,12 @@ links_data = load_json_file(LINKS_DATA_FILE, {})
 users_data = load_json_file(USERS_DATA_FILE, {})
 settings_data = load_json_file(SETTINGS_DATA_FILE, {
     "allowed_groups": [],
-    "group_chat_enabled": False
+    "group_chat_enabled": False,
+    "bot_uptime": datetime.now().isoformat()
 })
 
-# Bot start time for uptime tracking
-BOT_START_TIME = time.time()
+# Track bot start time
+BOT_START_TIME = datetime.now()
 
 def generate_unique_id():
     """Generate unique ID for files."""
@@ -112,36 +112,63 @@ def save_settings_data():
     with open(SETTINGS_DATA_FILE, 'w') as f:
         json.dump(settings_data, f)
 
-def get_uptime():
-    """Get bot uptime in readable format."""
-    uptime_seconds = int(time.time() - BOT_START_TIME)
-    days = uptime_seconds // 86400
-    hours = (uptime_seconds % 86400) // 3600
-    minutes = (uptime_seconds % 3600) // 60
-    seconds = uptime_seconds % 60
-    
-    parts = []
-    if days > 0:
-        parts.append(f"{days}d")
-    if hours > 0:
-        parts.append(f"{hours}h")
-    if minutes > 0:
-        parts.append(f"{minutes}m")
-    parts.append(f"{seconds}s")
-    
-    return " ".join(parts)
+def clear_terminal():
+    """Clear the terminal screen."""
+    os.system('cls' if os.name == 'nt' else 'clear')
 
-# Flask web interface
-app = Flask(__name__)
+def show_banner():
+    """Display the bot banner."""
+    banner = """
+███████╗██╗  ██╗██╗   ██╗     ██████╗ ██████╗ ██████╗ ███████╗██╗  ██╗
+██╔════╝╚██╗██╔╝██║   ██║    ██╔════╝██╔═══██╗██╔══██╗██╔════╝╚██╗██╔╝
+█████╗   ╚███╔╝ ██║   ██║    ██║     ██║   ██║██║  ██║█████╗   ╚███╔╝ 
+██╔══╝   ██╔██╗ ██║   ██║    ██║     ██║   ██║██║  ██║██╔══╝   ██╔██╗ 
+███████╗██╔╝ ██╗╚██████╔╝    ╚██████╗╚██████╔╝██████╔╝███████╗██╔╝ ██╗
+╚══════╝╚═╝  ╚═╝ ╚═════╝      ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝
+    """
+    print(banner)
+    print(f"╔{'═'*60}╗")
+    print(f"║ {BOT_DISPLAY_NAME:<58} ║")
+    print(f"║ {'-'*58} ║")
+    print(f"║ 🤖 Bot Status: RUNNING {' ':<38} ║")
+    print(f"║ 👑 Admin ID: {ADMIN_ID:<44} ║")
+    print(f"║ 📢 Channels: {len(CHANNELS)} configured {' ':<37} ║")
+    print(f"║ 💬 Group Chat: {'ENABLED' if settings_data.get('group_chat_enabled') else 'DISABLED':<42} ║")
+    print(f"║ 📁 Total Files: {len(files_data):<41} ║")
+    print(f"║ 🔗 Total Links: {len(links_data):<41} ║")
+    print(f"║ 👥 Total Users: {len(users_data):<41} ║")
+    print(f"╚{'═'*60}╝")
+    print("\n📝 Press Ctrl+C to stop the bot\n")
+    print("🌐 Web Dashboard: http://localhost:5000 (or your deployed URL)")
 
-# HTML template for the dashboard
+# Admin keyboard with styled buttons
+def get_admin_keyboard():
+    keyboard = [
+        [KeyboardButton("📝 𝐇𝐨𝐬𝐭 𝐓𝐞𝐱𝐭"), KeyboardButton("📁 𝐇𝐨𝐬𝐭 𝐅𝐢𝐥𝐞")],
+        [KeyboardButton("🔗 𝐆𝐞𝐧𝐞𝐫𝐚𝐭𝐞 𝐋𝐢𝐧𝐤"), KeyboardButton("📊 𝐅𝐢𝐥𝐞𝐬 𝐋𝐢𝐬𝐭")],
+        [KeyboardButton("📢 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭"), KeyboardButton("📋 𝐂𝐨𝐧𝐭𝐞𝐧𝐭 𝐌𝐚𝐧𝐚𝐠𝐞𝐫")],
+        [KeyboardButton("📈 𝐒𝐭𝐚𝐭𝐬"), KeyboardButton("⚙️ 𝐒𝐞𝐭𝐭𝐢𝐧𝐠𝐬")],
+        [KeyboardButton("❓ 𝐇𝐞𝐥𝐩")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# User keyboard with styled buttons
+def get_user_keyboard():
+    keyboard = [
+        [KeyboardButton("/start")],
+        [KeyboardButton("📁 𝐌𝐲 𝐅𝐢𝐥𝐞𝐬"), KeyboardButton("❓ 𝐇𝐞𝐥𝐩")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# ==================== FLASK WEB DASHBOARD ====================
+
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 Bot Monitoring Dashboard</title>
+    <title>{{ bot_name }} Dashboard</title>
     <style>
         * {
             margin: 0;
@@ -157,27 +184,28 @@ DASHBOARD_TEMPLATE = """
         }
         
         .container {
-            max-width: 1400px;
+            max-width: 1200px;
             margin: 0 auto;
         }
         
         .header {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 20px;
+            background: white;
+            border-radius: 15px;
             padding: 30px;
             margin-bottom: 30px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            text-align: center;
         }
         
         .header h1 {
-            font-size: 2.5em;
             color: #333;
+            font-size: 2.5em;
             margin-bottom: 10px;
         }
         
         .header p {
             color: #666;
-            font-size: 1.1em;
+            font-size: 1.2em;
         }
         
         .stats-grid {
@@ -201,395 +229,349 @@ DASHBOARD_TEMPLATE = """
         
         .stat-card h3 {
             color: #666;
-            font-size: 1em;
+            font-size: 1.1em;
             margin-bottom: 10px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
         }
         
-        .stat-card .value {
+        .stat-card .number {
+            color: #333;
             font-size: 2.5em;
             font-weight: bold;
-            color: #333;
         }
         
-        .stat-card .label {
-            color: #999;
-            font-size: 0.9em;
-            margin-top: 10px;
+        .stat-card .icon {
+            font-size: 3em;
+            margin-bottom: 10px;
         }
         
-        .card-primary { border-top: 5px solid #667eea; }
-        .card-success { border-top: 5px solid #48bb78; }
-        .card-warning { border-top: 5px solid #ecc94b; }
-        .card-danger { border-top: 5px solid #f56565; }
-        
-        .content-section {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 20px;
+        .channels-section {
+            background: white;
+            border-radius: 15px;
             padding: 30px;
             margin-bottom: 30px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
         }
         
-        .section-title {
-            font-size: 1.5em;
+        .channels-section h2 {
             color: #333;
             margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #667eea;
         }
         
-        .table-responsive {
-            overflow-x: auto;
+        .channel-list {
+            list-style: none;
         }
         
-        table {
+        .channel-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .channel-item:last-child {
+            border-bottom: none;
+        }
+        
+        .channel-status {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 15px;
+        }
+        
+        .status-active {
+            background: #4CAF50;
+        }
+        
+        .channel-name {
+            flex: 1;
+            font-size: 1.1em;
+        }
+        
+        .channel-link {
+            color: #667eea;
+            text-decoration: none;
+            padding: 5px 15px;
+            border: 1px solid #667eea;
+            border-radius: 5px;
+            transition: all 0.3s ease;
+        }
+        
+        .channel-link:hover {
+            background: #667eea;
+            color: white;
+        }
+        
+        .files-section {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+        
+        .files-section h2 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        
+        .files-table {
             width: 100%;
             border-collapse: collapse;
         }
         
-        th {
-            background: #f7fafc;
-            color: #4a5568;
-            font-weight: 600;
+        .files-table th,
+        .files-table td {
             padding: 12px;
             text-align: left;
-            border-bottom: 2px solid #e2e8f0;
+            border-bottom: 1px solid #eee;
         }
         
-        td {
-            padding: 12px;
-            border-bottom: 1px solid #e2e8f0;
-            color: #4a5568;
-        }
-        
-        tr:hover {
-            background: #f7fafc;
-        }
-        
-        .badge {
-            display: inline-block;
-            padding: 5px 10px;
-            border-radius: 20px;
-            font-size: 0.85em;
+        .files-table th {
+            background: #f5f5f5;
+            color: #666;
             font-weight: 600;
         }
         
-        .badge-success { background: #c6f6d5; color: #22543d; }
-        .badge-warning { background: #feebc8; color: #7b341e; }
-        .badge-info { background: #bee3f8; color: #1e4a6b; }
+        .files-table tr:hover {
+            background: #f9f9f9;
+        }
         
-        .refresh-btn {
+        .link-btn {
             background: #667eea;
             color: white;
             border: none;
-            padding: 10px 20px;
-            border-radius: 10px;
+            padding: 5px 10px;
+            border-radius: 5px;
             cursor: pointer;
-            font-size: 1em;
-            margin-bottom: 20px;
-            transition: background 0.3s ease;
+            font-size: 0.9em;
         }
         
-        .refresh-btn:hover {
-            background: #5a67d8;
+        .link-btn:hover {
+            background: #764ba2;
         }
         
         .footer {
             text-align: center;
             color: white;
             margin-top: 30px;
-            padding: 20px;
-            background: rgba(0,0,0,0.2);
-            border-radius: 15px;
         }
         
         .footer a {
             color: white;
             text-decoration: none;
-            font-weight: 600;
+            font-weight: bold;
         }
         
-        .footer a:hover {
-            text-decoration: underline;
+        .refresh-btn {
+            background: white;
+            color: #667eea;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            margin-top: 20px;
+            transition: all 0.3s ease;
+        }
+        
+        .refresh-btn:hover {
+            background: #f0f0f0;
+            transform: scale(1.05);
+        }
+        
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .stat-card .number {
+                font-size: 2em;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 {{ bot_name }} Dashboard</h1>
-            <p>Bot Monitoring & Statistics</p>
+            <h1>🤖 {{ bot_name }}</h1>
+            <p>Telegram Bot Dashboard</p>
             <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Data</button>
         </div>
         
         <div class="stats-grid">
-            <div class="stat-card card-primary">
-                <h3>📁 Total Files</h3>
-                <div class="value">{{ total_files }}</div>
-                <div class="label">Hosted files</div>
+            <div class="stat-card">
+                <div class="icon">📁</div>
+                <h3>Total Files</h3>
+                <div class="number">{{ stats.total_files }}</div>
             </div>
             
-            <div class="stat-card card-success">
-                <h3>🔗 Total Links</h3>
-                <div class="value">{{ total_links }}</div>
-                <div class="label">Generated links</div>
+            <div class="stat-card">
+                <div class="icon">🔗</div>
+                <h3>Total Links</h3>
+                <div class="number">{{ stats.total_links }}</div>
             </div>
             
-            <div class="stat-card card-warning">
-                <h3>👥 Total Users</h3>
-                <div class="value">{{ total_users }}</div>
-                <div class="label">Registered users</div>
+            <div class="stat-card">
+                <div class="icon">📥</div>
+                <h3>Total Downloads</h3>
+                <div class="number">{{ stats.total_downloads }}</div>
             </div>
             
-            <div class="stat-card card-danger">
-                <h3>📥 Downloads</h3>
-                <div class="value">{{ total_downloads }}</div>
-                <div class="label">File downloads</div>
-            </div>
-            
-            <div class="stat-card card-primary">
-                <h3>⏰ Uptime</h3>
-                <div class="value">{{ uptime }}</div>
-                <div class="label">Bot running time</div>
-            </div>
-            
-            <div class="stat-card card-success">
-                <h3>📊 Channels</h3>
-                <div class="value">{{ total_channels }}</div>
-                <div class="label">Verification channels</div>
+            <div class="stat-card">
+                <div class="icon">👥</div>
+                <h3>Total Users</h3>
+                <div class="number">{{ stats.total_users }}</div>
             </div>
         </div>
         
-        <div class="content-section">
-            <h2 class="section-title">📁 Recent Files</h2>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>File Name</th>
-                            <th>Type</th>
-                            <th>Downloads</th>
-                            <th>Date Added</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for file in recent_files %}
-                        <tr>
-                            <td>{{ file.name }}</td>
-                            <td><span class="badge badge-info">{{ file.file_type }}</span></td>
-                            <td><span class="badge badge-success">{{ file.downloads }}</span></td>
-                            <td>{{ file.date }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
+        <div class="channels-section">
+            <h2>📢 Required Channels</h2>
+            <ul class="channel-list">
+                {% for channel in channels %}
+                <li class="channel-item">
+                    <div class="channel-status status-active"></div>
+                    <span class="channel-name">{{ channel.display_name }}</span>
+                    <a href="https://t.me/{{ channel.username }}" target="_blank" class="channel-link">Join</a>
+                </li>
+                {% endfor %}
+            </ul>
         </div>
         
-        <div class="content-section">
-            <h2 class="section-title">🔗 Recent Links</h2>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Link ID</th>
-                            <th>File</th>
-                            <th>Created</th>
-                            <th>Clicks</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for link in recent_links %}
-                        <tr>
-                            <td><span class="badge badge-warning">{{ link.link_id }}</span></td>
-                            <td>{{ link.file_name }}</td>
-                            <td>{{ link.created }}</td>
-                            <td><span class="badge badge-success">{{ link.clicks }}</span></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        
-        <div class="content-section">
-            <h2 class="section-title">👥 Recent Users</h2>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>User ID</th>
-                            <th>Username</th>
-                            <th>First Name</th>
-                            <th>First Seen</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for user in recent_users %}
-                        <tr>
-                            <td><span class="badge badge-info">{{ user.user_id }}</span></td>
-                            <td>@{{ user.username }}</td>
-                            <td>{{ user.first_name }}</td>
-                            <td>{{ user.first_seen }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
+        <div class="files-section">
+            <h2>📁 Recent Files</h2>
+            <table class="files-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>File Name</th>
+                        <th>Type</th>
+                        <th>Downloads</th>
+                        <th>Date</th>
+                        <th>Link</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for file in recent_files %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td>{{ file.name }}</td>
+                        <td>{{ file.type }}</td>
+                        <td>{{ file.downloads }}</td>
+                        <td>{{ file.date }}</td>
+                        <td>
+                            <button class="link-btn" onclick="copyLink('{{ file.link }}')">Copy Link</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
         
         <div class="footer">
-            <p>🤖 {{ bot_name }} | Powered by Flask & Python Telegram Bot</p>
-            <p><a href="/api/stats">📊 View API Stats (JSON)</a></p>
+            <p>⚡ Powered by <a href="#">{{ bot_name }}</a> | Uptime: {{ uptime }}</p>
         </div>
     </div>
+    
+    <script>
+        function copyLink(link) {
+            navigator.clipboard.writeText(link).then(function() {
+                alert('Link copied to clipboard!');
+            }, function() {
+                alert('Failed to copy link');
+            });
+        }
+        
+        // Auto refresh every 30 seconds
+        setTimeout(function() {
+            location.reload();
+        }, 30000);
+    </script>
 </body>
 </html>
 """
 
 @app.route('/')
 def dashboard():
-    """Render the dashboard."""
-    recent_files_list = []
-    for file_id, file_data in list(files_data.items())[:10]:
-        recent_files_list.append({
-            'name': file_data.get('name', 'Unknown'),
-            'file_type': file_data.get('file_type', 'unknown'),
-            'downloads': file_data.get('downloads', 0),
-            'date': file_data.get('date', 'Unknown')
+    """Main dashboard page."""
+    uptime_delta = datetime.now() - BOT_START_TIME
+    days = uptime_delta.days
+    hours = uptime_delta.seconds // 3600
+    minutes = (uptime_delta.seconds % 3600) // 60
+    uptime_str = f"{days}d {hours}h {minutes}m"
+    
+    recent_files = []
+    for file_id, file_data in list(files_data.items())[-10:]:
+        link_id = None
+        for lid, ldata in links_data.items():
+            if ldata["file_id"] == file_id:
+                link_id = lid
+                break
+        
+        link_url = f"https://t.me/{BOT_USERNAME}?start={link_id}" if link_id else "#"
+        
+        recent_files.append({
+            "name": file_data.get('name', 'Unknown'),
+            "type": file_data.get('file_type', 'Unknown'),
+            "downloads": file_data.get('downloads', 0),
+            "date": file_data.get('date', 'Unknown'),
+            "link": link_url
         })
     
-    recent_links_list = []
-    for link_id, link_data in list(links_data.items())[:10]:
-        file_id = link_data.get('file_id', '')
-        file_name = files_data.get(file_id, {}).get('name', 'Unknown') if file_id else 'Unknown'
-        recent_links_list.append({
-            'link_id': link_id[:8] + '...',
-            'file_name': file_name,
-            'created': link_data.get('created', 'Unknown'),
-            'clicks': link_data.get('clicks', 0)
-        })
-    
-    recent_users_list = []
-    for user_id, user_data in list(users_data.items())[:10]:
-        recent_users_list.append({
-            'user_id': user_id,
-            'username': user_data.get('username', 'N/A'),
-            'first_name': user_data.get('first_name', 'Unknown'),
-            'first_seen': user_data.get('first_seen', 'Unknown')
+    channel_data = []
+    for i, channel in enumerate(CHANNELS):
+        channel_data.append({
+            "display_name": CHANNEL_DISPLAY_NAMES[i],
+            "username": channel.replace('@', '')
         })
     
     total_downloads = sum(file_data.get('downloads', 0) for file_data in files_data.values())
+    
+    stats = {
+        "total_files": len(files_data),
+        "total_links": len(links_data),
+        "total_downloads": total_downloads,
+        "total_users": len(users_data)
+    }
     
     return render_template_string(
         DASHBOARD_TEMPLATE,
         bot_name=BOT_DISPLAY_NAME,
-        total_files=len(files_data),
-        total_links=len(links_data),
-        total_users=len(users_data),
-        total_downloads=total_downloads,
-        total_channels=len(CHANNELS),
-        uptime=get_uptime(),
-        recent_files=recent_files_list,
-        recent_links=recent_links_list,
-        recent_users=recent_users_list
+        stats=stats,
+        channels=channel_data,
+        recent_files=recent_files,
+        uptime=uptime_str
     )
 
 @app.route('/api/stats')
 def api_stats():
-    """Return JSON stats for API."""
+    """API endpoint for stats."""
     total_downloads = sum(file_data.get('downloads', 0) for file_data in files_data.values())
-    
     return jsonify({
-        'bot_name': BOT_DISPLAY_NAME,
-        'stats': {
-            'total_files': len(files_data),
-            'total_links': len(links_data),
-            'total_users': len(users_data),
-            'total_downloads': total_downloads,
-            'total_channels': len(CHANNELS),
-            'uptime': get_uptime(),
-            'uptime_seconds': int(time.time() - BOT_START_TIME)
-        },
-        'channels': [
-            {'name': CHANNELS[i], 'display_name': CHANNEL_DISPLAY_NAMES[i]} 
-            for i in range(len(CHANNELS))
-        ],
-        'settings': {
-            'group_chat_enabled': settings_data.get('group_chat_enabled', False),
-            'allowed_groups': settings_data.get('allowed_groups', [])
-        }
+        "total_files": len(files_data),
+        "total_links": len(links_data),
+        "total_downloads": total_downloads,
+        "total_users": len(users_data),
+        "channels": len(CHANNELS),
+        "group_chat_enabled": settings_data.get("group_chat_enabled", False)
     })
 
-@app.route('/api/files')
-def api_files():
-    """Return files data as JSON."""
-    files_list = []
-    for file_id, file_data in files_data.items():
-        files_list.append({
-            'id': file_id,
-            'name': file_data.get('name', 'Unknown'),
-            'type': file_data.get('file_type', 'unknown'),
-            'downloads': file_data.get('downloads', 0),
-            'date': file_data.get('date', 'Unknown')
-        })
-    return jsonify(files_list)
+@app.route('/health')
+def health():
+    """Health check endpoint for keep-alive."""
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
 
-@app.route('/api/links')
-def api_links():
-    """Return links data as JSON."""
-    links_list = []
-    for link_id, link_data in links_data.items():
-        file_id = link_data.get('file_id', '')
-        file_name = files_data.get(file_id, {}).get('name', 'Unknown') if file_id else 'Unknown'
-        links_list.append({
-            'id': link_id,
-            'file_id': file_id,
-            'file_name': file_name,
-            'created': link_data.get('created', 'Unknown'),
-            'clicks': link_data.get('clicks', 0),
-            'url': f"https://t.me/{BOT_USERNAME}?start={link_id}"
-        })
-    return jsonify(links_list)
-
-@app.route('/api/users')
-def api_users():
-    """Return users data as JSON."""
-    users_list = []
-    for user_id, user_data in users_data.items():
-        users_list.append({
-            'id': user_id,
-            'username': user_data.get('username', 'N/A'),
-            'first_name': user_data.get('first_name', 'Unknown'),
-            'last_name': user_data.get('last_name', 'N/A'),
-            'first_seen': user_data.get('first_seen', 'Unknown')
-        })
-    return jsonify(users_list)
+@app.route('/ping')
+def ping():
+    """Simple ping endpoint."""
+    return "pong"
 
 def run_flask():
-    """Run Flask server in a separate thread."""
-    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False, use_reloader=False)
+    """Run Flask app in a separate thread."""
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 
-# Admin keyboard with styled buttons
-def get_admin_keyboard():
-    keyboard = [
-        [KeyboardButton("📝 𝐇𝐨𝐬𝐭 𝐓𝐞𝐱𝐭"), KeyboardButton("📁 𝐇𝐨𝐬𝐭 𝐅𝐢𝐥𝐞")],
-        [KeyboardButton("🔗 𝐆𝐞𝐧𝐞𝐫𝐚𝐭𝐞 𝐋𝐢𝐧𝐤"), KeyboardButton("📊 𝐅𝐢𝐥𝐞𝐬 𝐋𝐢𝐬𝐭")],
-        [KeyboardButton("📢 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭"), KeyboardButton("📋 𝐂𝐨𝐧𝐭𝐞𝐧𝐭 𝐌𝐚𝐧𝐚𝐠𝐞𝐫")],
-        [KeyboardButton("📈 𝐒𝐭𝐚𝐭𝐬"), KeyboardButton("⚙️ 𝐒𝐞𝐭𝐭𝐢𝐧𝐠𝐬")],
-        [KeyboardButton("❓ 𝐇𝐞𝐥𝐩")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-# User keyboard with styled buttons
-def get_user_keyboard():
-    keyboard = [
-        [KeyboardButton("/start")],
-        [KeyboardButton("📁 𝐌𝐲 𝐅𝐢𝐥𝐞𝐬"), KeyboardButton("❓ 𝐇𝐞𝐥𝐩")]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+# ==================== TELEGRAM BOT CODE ====================
 
 async def check_group_permission(update: Update) -> bool:
     """Check if bot should respond in this group."""
@@ -608,43 +590,37 @@ async def check_group_permission(update: Update) -> bool:
     
     return True
 
+async def check_channel_subscription(user_id: int, channel: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check if user is subscribed to a specific channel."""
+    try:
+        chat_member = await context.bot.get_chat_member(
+            chat_id=channel,
+            user_id=user_id
+        )
+        logger.info(f"User {user_id} is {chat_member.status} in {channel}")
+        
+        # Check if user is member, administrator, creator (all valid states)
+        if chat_member.status in ['left', 'kicked']:
+            return False
+        return True
+    except TelegramError as e:
+        logger.error(f"Error checking channel {channel}: {e}")
+        # If bot can't check channel, assume not subscribed for security
+        return False
+
 async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Check if user is subscribed to all channels."""
-    try:
-        for channel in CHANNELS:
-            try:
-                chat_member = await context.bot.get_chat_member(
-                    chat_id=channel,
-                    user_id=user_id
-                )
-                # Check if user is member, administrator, creator
-                if chat_member.status in ['left', 'kicked']:
-                    logger.info(f"User {user_id} not subscribed to {channel}")
-                    return False
-                logger.info(f"User {user_id} is {chat_member.status} in {channel}")
-            except Exception as e:
-                logger.error(f"Error checking channel {channel}: {e}")
-                return False
-        return True
-    except Exception as e:
-        logger.error(f"Error checking subscription: {e}")
-        return False
+    for channel in CHANNELS:
+        if not await check_channel_subscription(user_id, channel, context):
+            return False
+    return True
 
 async def get_unjoined_channels(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Get list of channels user hasn't joined yet."""
     unjoined = []
     for channel in CHANNELS:
-        try:
-            chat_member = await context.bot.get_chat_member(
-                chat_id=channel,
-                user_id=user_id
-            )
-            logger.info(f"User {user_id} is {chat_member.status} in {channel}")
-            if chat_member.status in ['left', 'kicked']:
-                unjoined.append(channel)
-        except Exception as e:
-            logger.error(f"Error checking channel {channel}: {e}")
-            unjoined.append(channel)  # If can't check, assume not joined
+        if not await check_channel_subscription(user_id, channel, context):
+            unjoined.append(channel)
     return unjoined
 
 async def force_subscription_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -666,9 +642,10 @@ async def force_subscription_check(update: Update, context: ContextTypes.DEFAULT
         # Create subscription keyboard
         keyboard = []
         for idx in unjoined_indices:
+            channel_username = CHANNELS[idx].replace('@', '')
             keyboard.append([InlineKeyboardButton(
                 f"📢 𝐉𝐨𝐢𝐧 {CHANNEL_DISPLAY_NAMES[idx]}",
-                url=f"https://t.me/{CHANNELS[idx].replace('@', '')}"
+                url=f"https://t.me/{channel_username}"
             )])
         
         keyboard.append([InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧", callback_data="verify_subscription")])
@@ -677,7 +654,6 @@ async def force_subscription_check(update: Update, context: ContextTypes.DEFAULT
         total_channels = len(CHANNELS)
         joined_count = total_channels - len(unjoined_indices)
         
-        # NO HTML TAGS - just plain text with Unicode bold
         await update.message.reply_text(
             f"🚫 𝐀𝐜𝐜𝐞𝐬𝐬 𝐃𝐞𝐧𝐢𝐞𝐝!\n\n"
             f"📊 𝐏𝐫𝐨𝐠𝐫𝐞𝐬𝐬: {joined_count}/{total_channels} 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐣𝐨𝐢𝐧𝐞𝐝\n\n"
@@ -728,7 +704,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         greeting = "𝐆𝐨𝐨𝐝 𝐄𝐯𝐞𝐧𝐢𝐧𝐠"
     
-    # Professional welcome message - NO HTML TAGS, just Unicode bold
     welcome_text = (
         f"╔═══《 🎉 {greeting}! 》═══╗\n\n"
         f"👤 𝐔𝐬𝐞𝐫: {user.first_name}\n"
@@ -750,13 +725,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 📁 𝐌𝐲 𝐅𝐢𝐥𝐞𝐬 𝐭𝐨 𝐯𝐢𝐞𝐰 𝐚𝐜𝐜𝐞𝐬𝐬𝐞𝐝 𝐟𝐢𝐥𝐞𝐬"
     )
     
-    # Set appropriate keyboard based on user
     if user_id == ADMIN_ID:
         reply_markup = get_admin_keyboard()
     else:
         reply_markup = get_user_keyboard()
     
-    # Send without HTML parsing
     await update.message.reply_text(
         welcome_text,
         reply_markup=reply_markup
@@ -764,13 +737,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE, link_id: str):
     """Handle file link access - STRICT SUBSCRIPTION CHECK."""
-    # Check group permission
     if not await check_group_permission(update):
         return
     
     user_id = update.effective_user.id
     
-    # FORCE SUBSCRIPTION CHECK - User MUST join channels first
     if not await force_subscription_check(update, context):
         return
     
@@ -792,14 +763,11 @@ async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE, l
         )
         return
     
-    # Send the file
     await send_file_to_user(update, file_id)
     
-    # Track download
     files_data[file_id]["downloads"] = files_data[file_id].get("downloads", 0) + 1
     save_files_data()
     
-    # Add to user's accessed files
     user_files = files_data[file_id].get("accessed_by", {})
     if str(user_id) not in user_files:
         user_files[str(user_id)] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -871,14 +839,11 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
             )
             
-            # Send the file
             await send_file_to_user_callback(query, file_id)
             
-            # Track download
             files_data[file_id]["downloads"] = files_data[file_id].get("downloads", 0) + 1
             save_files_data()
             
-            # Add to user's accessed files
             user_files = files_data[file_id].get("accessed_by", {})
             if str(user_id) not in user_files:
                 user_files[str(user_id)] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -921,9 +886,10 @@ async def ask_for_subscription_callback(query, context: ContextTypes.DEFAULT_TYP
     keyboard = []
     
     for idx in unjoined_indices:
+        channel_username = CHANNELS[idx].replace('@', '')
         keyboard.append([InlineKeyboardButton(
             f"📢 𝐉𝐨𝐢𝐧 {CHANNEL_DISPLAY_NAMES[idx]}",
-            url=f"https://t.me/{CHANNELS[idx].replace('@', '')}"
+            url=f"https://t.me/{channel_username}"
         )])
     
     keyboard.append([InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧", callback_data="verify_subscription")])
@@ -952,15 +918,12 @@ async def ask_for_subscription_with_file_callback(query, context: ContextTypes.D
         unjoined_indices = [CHANNELS.index(ch) for ch in unjoined_channels if ch in CHANNELS]
     
     if not unjoined_indices:
-        # User has joined all channels, send file directly
         file_id = links_data[link_id]["file_id"]
         await send_file_to_user_callback(query, file_id)
         
-        # Track download
         files_data[file_id]["downloads"] = files_data[file_id].get("downloads", 0) + 1
         save_files_data()
         
-        # Add to user's accessed files
         user_files = files_data[file_id].get("accessed_by", {})
         if str(user_id) not in user_files:
             user_files[str(user_id)] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -971,9 +934,10 @@ async def ask_for_subscription_with_file_callback(query, context: ContextTypes.D
     keyboard = []
     
     for idx in unjoined_indices:
+        channel_username = CHANNELS[idx].replace('@', '')
         keyboard.append([InlineKeyboardButton(
             f"📢 𝐉𝐨𝐢𝐧 {CHANNEL_DISPLAY_NAMES[idx]}",
-            url=f"https://t.me/{CHANNELS[idx].replace('@', '')}"
+            url=f"https://t.me/{channel_username}"
         )])
     
     keyboard.append([InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲 & 𝐆𝐞𝐭 𝐅𝐢𝐥𝐞", callback_data=f"verify_file_{link_id}")])
@@ -1106,7 +1070,6 @@ async def admin_generate_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
     
-    # Create keyboard with file list
     keyboard = []
     files_list = list(files_data.items())
     
@@ -1157,7 +1120,6 @@ async def admin_files_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     files_list_text += f"━━━━━━━━━━━━━━━━━━━━━━\n🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
     
-    # Add generate link button
     keyboard = [[InlineKeyboardButton("🔗 𝐆𝐞𝐧𝐞𝐫𝐚𝐭𝐞 𝐋𝐢𝐧𝐤", callback_data="generate_link_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -1333,7 +1295,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
-    # FORCE SUBSCRIPTION CHECK - User must join channels first (except admin)
     if user_id != ADMIN_ID:
         if not await force_subscription_check(update, context):
             return
@@ -1495,7 +1456,6 @@ async def user_my_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
-    # FORCE SUBSCRIPTION CHECK - User must join channels first
     if not await force_subscription_check(update, context):
         return
     
@@ -2089,7 +2049,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
-    # FORCE SUBSCRIPTION CHECK - User must join channels first (except admin)
     if user_id != ADMIN_ID:
         if not await force_subscription_check(update, context):
             return
@@ -2141,36 +2100,51 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-def main():
-    """Start the bot and Flask server."""
-    print("🚀 Starting Bot with Flask Monitoring...")
-    print(f"📊 Flask dashboard will be available at: http://{FLASK_HOST}:{FLASK_PORT}")
-    print(f"📡 API endpoint: http://{FLASK_HOST}:{FLASK_PORT}/api/stats")
-    print("="*50)
+def run_bot():
+    """Run the Telegram bot in the main thread."""
+    try:
+        # Create the Application
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("host_text", admin_host_text))
+        application.add_handler(CommandHandler("stats", admin_stats))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("cancel", handle_message))
+        
+        application.add_handler(CallbackQueryHandler(verify_callback, pattern="^(verify_subscription|verify_file_)"))
+        application.add_handler(CallbackQueryHandler(handle_callback))
+        
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        application.add_handler(MessageHandler(
+            filters.PHOTO | filters.VIDEO | filters.Document.ALL, 
+            handle_file
+        ))
+        
+        # Run the bot
+        print("✅ Bot started successfully!")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+    except Conflict as e:
+        print(f"❌ Conflict error: {e}")
+        print("⚠️ Another bot instance is already running!")
+        print("💡 Solution: Stop any other bot instances and try again")
+        print("   - Check if bot is running locally")
+        print("   - Check if bot is running on another server")
+        print("   - Wait 30 seconds for the other instance to timeout")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Unexpected error: {e}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    clear_terminal()
+    show_banner()
     
     # Start Flask in a separate thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("host_text", admin_host_text))
-    application.add_handler(CommandHandler("stats", admin_stats))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("cancel", handle_message))
-    
-    application.add_handler(CallbackQueryHandler(verify_callback, pattern="^(verify_subscription|verify_file_)"))
-    application.add_handler(CallbackQueryHandler(handle_callback))
-    
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    application.add_handler(MessageHandler(
-        filters.PHOTO | filters.VIDEO | filters.Document.ALL, 
-        handle_file
-    ))
-    
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == '__main__':
-    main()
+    # Run the bot in the main thread
+    run_bot()
