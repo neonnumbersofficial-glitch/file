@@ -26,7 +26,7 @@ BOT_DISPLAY_NAME = "𝐑𝐑𝐂 <𝐊> 𝐄𝐗𝐔 | 𝐗𝐒𝐔"
 # Channels to verify (format: @channel_username or channel ID)
 CHANNELS = [
     "@exucoder1",
-    "@exucoder1",
+    "@exufile",
     "@funcodex"
 ]
 
