@@ -50,26 +50,49 @@ BOT_USERNAME = "EXUBOTAI_1BOT"  # Plain text for URLs
 # Display name with Unicode bold
 BOT_DISPLAY_NAME = "𝐑𝐑𝐂 <𝐊> 𝐄𝐗𝐔 | 𝐗𝐒𝐔"
 
-# Channels to verify (format: @channel_username or channel ID)
-CHANNELS = [
-    "@exucoder1",
-    "@funcodex"
+# ============================================
+# CHANNELS AND GROUPS FOR SUBSCRIPTION
+# ============================================
+SUBSCRIPTION_ENTITIES = [
+    {
+        "id": "@exulive",
+        "name": "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟏 (𝐄𝐱𝐮 𝐋𝐢𝐯𝐞)",
+        "type": "channel",
+        "link": "https://t.me/exulive"
+    },
+    {
+        "id": "@exubackup",
+        "name": "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟐 (𝐄𝐱𝐮 𝐁𝐚𝐜𝐤𝐮𝐩)",
+        "type": "channel",
+        "link": "https://t.me/exubackup"
+    },
+    {
+        "id": "@funcodex",
+        "name": "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟑 (𝐅𝐮𝐧𝐜𝐨𝐝𝐞𝐱)",
+        "type": "channel",
+        "link": "https://t.me/funcodex"
+    },
+    {
+        "id": "@exucoder1",
+        "name": "𝐆𝐫𝐨𝐮𝐩 𝟏 (𝐄𝐱𝐮 𝐂𝐨𝐝𝐞𝐫𝐬)",
+        "type": "group",
+        "link": "https://t.me/exucoder1"
+    }
 ]
 
-# Channel display names (for hiding in buttons)
-CHANNEL_DISPLAY_NAMES = [
-    "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟏",
-    "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟐", 
-]
+TOTAL_SUBSCRIPTIONS = len(SUBSCRIPTION_ENTITIES)
 
-# Allowed groups for bot to respond (empty list means no groups allowed)
-ALLOWED_GROUPS = []  # Add group IDs here like [-1001234567890]
+# Allowed groups for bot to respond (EMPTY = no groups allowed)
+ALLOWED_GROUPS = []  # Keep empty - bot will ignore all group messages
 
 # Files storage
 FILES_DATA_FILE = "files_data.json"
 LINKS_DATA_FILE = "links_data.json"
 USERS_DATA_FILE = "users_data.json"
 SETTINGS_DATA_FILE = "settings_data.json"
+
+# Track user subscription status to detect changes
+USER_SUBSCRIPTION_STATUS = {}
 
 # Initialize data files with proper error handling
 def load_json_file(filename, default_data):
@@ -147,8 +170,10 @@ def show_banner():
     print(f"║ {'-'*58} ║")
     print(f"║ 🤖 Bot Status: RUNNING {' ':<38} ║")
     print(f"║ 👑 Admin ID: {ADMIN_ID:<44} ║")
-    print(f"║ 📢 Channels: {len(CHANNELS)} configured {' ':<37} ║")
-    print(f"║ 💬 Group Chat: {'ENABLED' if settings_data.get('group_chat_enabled') else 'DISABLED':<42} ║")
+    print(f"║ 📢 Subscription Entities: {TOTAL_SUBSCRIPTIONS} configured {' ':<30} ║")
+    for i, entity in enumerate(SUBSCRIPTION_ENTITIES, 1):
+        print(f"║    {i}. {entity['name']:<48} ║")
+    print(f"║ 💬 Group Chat: DISABLED (No group access) {' ':<27} ║")
     print(f"║ 📁 Total Files: {len(files_data):<41} ║")
     print(f"║ 🔗 Total Links: {len(links_data):<41} ║")
     print(f"║ 👥 Total Users: {len(users_data):<41} ║")
@@ -176,103 +201,114 @@ def get_user_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 async def check_group_permission(update: Update) -> bool:
-    """Check if bot should respond in this group."""
-    if update.effective_chat.type == "private":
+    """Check if bot should respond - ONLY PRIVATE CHATS ALLOWED."""
+    chat_type = update.effective_chat.type
+    
+    # Only allow private chats
+    if chat_type == "private":
         return True
     
-    # Group chat
-    if not settings_data.get("group_chat_enabled", False):
-        return False
-    
-    group_id = update.effective_chat.id
-    allowed_groups = settings_data.get("allowed_groups", [])
-    
-    if allowed_groups and group_id not in allowed_groups:
-        return False
-    
-    return True
+    # For any group/supergroup/channel, silently ignore
+    # Don't send any message, just return False
+    return False
 
 async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Check if user is subscribed to all channels."""
+    """Check if user is subscribed to all channels and groups."""
     try:
-        for channel in CHANNELS:
+        for entity in SUBSCRIPTION_ENTITIES:
             try:
                 chat_member = await context.bot.get_chat_member(
-                    chat_id=channel,
+                    chat_id=entity["id"],
                     user_id=user_id
                 )
                 # Check if user is member, administrator, creator
                 if chat_member.status in ['left', 'kicked']:
-                    logger.info(f"User {user_id} not subscribed to {channel}")
+                    logger.info(f"User {user_id} left/kicked from {entity['name']}")
                     return False
-                logger.info(f"User {user_id} is {chat_member.status} in {channel}")
+                logger.info(f"User {user_id} is {chat_member.status} in {entity['name']}")
             except Exception as e:
-                logger.error(f"Error checking channel {channel}: {e}")
+                logger.error(f"Error checking {entity['name']}: {e}")
                 return False
         return True
     except Exception as e:
         logger.error(f"Error checking subscription: {e}")
         return False
 
-async def get_unjoined_channels(user_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Get list of channels user hasn't joined yet."""
+async def get_unjoined_entities(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Get list of channels/groups user hasn't joined yet."""
     unjoined = []
-    for channel in CHANNELS:
+    for entity in SUBSCRIPTION_ENTITIES:
         try:
             chat_member = await context.bot.get_chat_member(
-                chat_id=channel,
+                chat_id=entity["id"],
                 user_id=user_id
             )
-            logger.info(f"User {user_id} is {chat_member.status} in {channel}")
+            logger.info(f"User {user_id} is {chat_member.status} in {entity['name']}")
             if chat_member.status in ['left', 'kicked']:
-                unjoined.append(channel)
+                unjoined.append(entity)
         except Exception as e:
-            logger.error(f"Error checking channel {channel}: {e}")
-            unjoined.append(channel)  # If can't check, assume not joined
+            logger.error(f"Error checking {entity['name']}: {e}")
+            unjoined.append(entity)  # If can't check, assume not joined
     return unjoined
 
-async def notify_admin_channel_join(user_id: int, username: str, first_name: str, context: ContextTypes.DEFAULT_TYPE):
-    """Notify admin when a user joins a channel"""
-    try:
-        # Check if user has joined all channels now
-        all_joined = True
-        joined_channels = []
+async def check_subscription_change(user_id: int, username: str, first_name: str, context: ContextTypes.DEFAULT_TYPE):
+    """Check if user's subscription status changed and notify admin."""
+    global USER_SUBSCRIPTION_STATUS
+    
+    # Get current subscription status
+    current_status = []
+    unjoined = []
+    
+    for entity in SUBSCRIPTION_ENTITIES:
+        try:
+            chat_member = await context.bot.get_chat_member(
+                chat_id=entity["id"],
+                user_id=user_id
+            )
+            if chat_member.status in ['left', 'kicked']:
+                current_status.append(f"❌ {entity['name']}")
+                unjoined.append(entity)
+            else:
+                current_status.append(f"✅ {entity['name']}")
+        except:
+            current_status.append(f"❌ {entity['name']} (Error)")
+            unjoined.append(entity)
+    
+    # Check if we have previous status for this user
+    if str(user_id) in USER_SUBSCRIPTION_STATUS:
+        old_status = USER_SUBSCRIPTION_STATUS[str(user_id)]
         
-        for i, channel in enumerate(CHANNELS):
+        # Compare to detect changes
+        if old_status != current_status:
+            # Status changed - notify admin
+            notification = f"🔔 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧 𝐂𝐡𝐚𝐧𝐠𝐞 𝐃𝐞𝐭𝐞𝐜𝐭𝐞𝐝!\n\n"
+            notification += f"👤 𝐔𝐬𝐞𝐫: {first_name}\n"
+            notification += f"🆔 𝐔𝐬𝐞𝐫 𝐈𝐃: {user_id}\n"
+            notification += f"📛 𝐔𝐬𝐞𝐫𝐧𝐚𝐦𝐞: @{username if username else '𝐍𝐨𝐭 𝐬𝐞𝐭'}\n\n"
+            notification += f"📋 𝐂𝐮𝐫𝐫𝐞𝐧𝐭 𝐒𝐭𝐚𝐭𝐮𝐬:\n"
+            
+            for status in current_status:
+                notification += f"{status}\n"
+            
+            if unjoined:
+                notification += f"\n⚠️ 𝐌𝐢𝐬𝐬𝐢𝐧𝐠: {len(unjoined)}/{TOTAL_SUBSCRIPTIONS}"
+            else:
+                notification += f"\n✅ 𝐀𝐥𝐥 {TOTAL_SUBSCRIPTIONS} 𝐣𝐨𝐢𝐧𝐞𝐝!"
+            
+            notification += f"\n\n🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
+            
             try:
-                chat_member = await context.bot.get_chat_member(
-                    chat_id=channel,
-                    user_id=user_id
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=notification
                 )
-                if chat_member.status not in ['left', 'kicked']:
-                    joined_channels.append(CHANNEL_DISPLAY_NAMES[i])
-                else:
-                    all_joined = False
-            except:
-                all_joined = False
-        
-        # Send notification to admin
-        notification = (
-            f"📢 𝐍𝐞𝐰 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝐉𝐨𝐢𝐧 𝐃𝐞𝐭𝐞𝐜𝐭𝐞𝐝!\n\n"
-            f"👤 𝐔𝐬𝐞𝐫: {first_name}\n"
-            f"🆔 𝐔𝐬𝐞𝐫 𝐈𝐃: {user_id}\n"
-            f"📛 𝐔𝐬𝐞𝐫𝐧𝐚𝐦𝐞: @{username if username else '𝐍𝐨𝐭 𝐬𝐞𝐭'}\n"
-            f"📊 𝐒𝐭𝐚𝐭𝐮𝐬: {'✅ 𝐀𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐣𝐨𝐢𝐧𝐞𝐝' if all_joined else '⚠️ 𝐏𝐚𝐫𝐭𝐢𝐚𝐥 𝐣𝐨𝐢𝐧'}\n\n"
-        )
-        
-        if joined_channels:
-            notification += "📋 𝐉𝐨𝐢𝐧𝐞𝐝 𝐂𝐡𝐚𝐧𝐧𝐞𝐥𝐬:\n"
-            for channel in joined_channels:
-                notification += f"• {channel}\n"
-        
-        notification += f"\n🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
-        
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=notification
-        )
-    except Exception as e:
-        logger.error(f"Error notifying admin: {e}")
+            except Exception as e:
+                logger.error(f"Error notifying admin: {e}")
+    
+    # Update stored status
+    USER_SUBSCRIPTION_STATUS[str(user_id)] = current_status
+    
+    return unjoined
 
 async def force_subscription_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Force subscription check - returns True if user is subscribed, False otherwise."""
@@ -282,51 +318,47 @@ async def force_subscription_check(update: Update, context: ContextTypes.DEFAULT
     if user_id == ADMIN_ID:
         return True
     
-    # Check subscription
-    is_subscribed = await check_subscription(user_id, context)
+    user = update.effective_user
     
-    if not is_subscribed:
-        # Get unjoined channels
-        unjoined_channels = await get_unjoined_channels(user_id, context)
-        unjoined_indices = [CHANNELS.index(ch) for ch in unjoined_channels if ch in CHANNELS]
-        
-        # Notify admin about partial join
-        user = update.effective_user
-        await notify_admin_channel_join(user_id, user.username, user.first_name, context)
-        
+    # Check subscription and detect changes
+    unjoined_entities = await check_subscription_change(user_id, user.username, user.first_name, context)
+    
+    if unjoined_entities:
         # Create subscription keyboard
         keyboard = []
-        for idx in unjoined_indices:
-            keyboard.append([InlineKeyboardButton(
-                f"📢 𝐉𝐨𝐢𝐧 {CHANNEL_DISPLAY_NAMES[idx]}",
-                url=f"https://t.me/{CHANNELS[idx].replace('@', '')}"
-            )])
+        for entity in unjoined_entities:
+            if entity["link"]:
+                keyboard.append([InlineKeyboardButton(
+                    f"📢 𝐉𝐨𝐢𝐧 {entity['name']}",
+                    url=entity["link"]
+                )])
+            else:
+                # Can't create direct link for group IDs
+                keyboard.append([InlineKeyboardButton(
+                    f"📢 𝐉𝐨𝐢𝐧 {entity['name']} (Click to join)",
+                    url="https://t.me/"
+                )])
         
         keyboard.append([InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧", callback_data="verify_subscription")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        total_channels = len(CHANNELS)
-        joined_count = total_channels - len(unjoined_indices)
+        joined_count = TOTAL_SUBSCRIPTIONS - len(unjoined_entities)
         
         # NO HTML TAGS - just plain text with Unicode bold
         await update.message.reply_text(
             f"🚫 𝐀𝐜𝐜𝐞𝐬𝐬 𝐃𝐞𝐧𝐢𝐞𝐝!\n\n"
-            f"📊 𝐏𝐫𝐨𝐠𝐫𝐞𝐬𝐬: {joined_count}/{total_channels} 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐣𝐨𝐢𝐧𝐞𝐝\n\n"
-            f"⚠️ 𝐓𝐨 𝐮𝐬𝐞 𝐭𝐡𝐢𝐬 𝐛𝐨𝐭, 𝐲𝐨𝐮 𝐦𝐮𝐬𝐭 𝐣𝐨𝐢𝐧 𝐚𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐟𝐢𝐫𝐬𝐭!\n\n"
+            f"📊 𝐏𝐫𝐨𝐠𝐫𝐞𝐬𝐬: {joined_count}/{TOTAL_SUBSCRIPTIONS} 𝐣𝐨𝐢𝐧𝐞𝐝\n\n"
+            f"⚠️ 𝐓𝐨 𝐮𝐬𝐞 𝐭𝐡𝐢𝐬 𝐛𝐨𝐭, 𝐲𝐨𝐮 𝐦𝐮𝐬𝐭 𝐣𝐨𝐢𝐧 𝐚𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐚𝐧𝐝 𝐠𝐫𝐨𝐮𝐩𝐬 𝐟𝐢𝐫𝐬𝐭!\n\n"
             f"👇 𝐂𝐥𝐢𝐜𝐤 𝐭𝐡𝐞 𝐛𝐮𝐭𝐭𝐨𝐧𝐬 𝐛𝐞𝐥𝐨𝐰 𝐭𝐨 𝐣𝐨𝐢𝐧: 👇",
             reply_markup=reply_markup
         )
         return False
-    else:
-        # User has joined all channels, notify admin
-        user = update.effective_user
-        await notify_admin_channel_join(user_id, user.username, user.first_name, context)
     
     return True
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a professional welcome message when the command /start is issued."""
-    # Check group permission
+    # Check group permission - only private chats allowed
     if not await check_group_permission(update):
         return
     
@@ -350,7 +382,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_file_link(update, context, link_id)
         return
     
-    # FORCE SUBSCRIPTION CHECK - User must join channels first
+    # FORCE SUBSCRIPTION CHECK - User must join all channels/groups first
     if not await force_subscription_check(update, context):
         return
     
@@ -378,11 +410,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 📊 𝐑𝐞𝐚𝐥-𝐭𝐢𝐦𝐞 𝐃𝐨𝐰𝐧𝐥𝐨𝐚𝐝 𝐓𝐫𝐚𝐜𝐤𝐢𝐧𝐠\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"✅ 𝐀𝐜𝐜𝐞𝐬𝐬 𝐆𝐫𝐚𝐧𝐭𝐞𝐝!\n"
-        f"𝐘𝐨𝐮 𝐡𝐚𝐯𝐞 𝐬𝐮𝐜𝐜𝐞𝐬𝐬𝐟𝐮𝐥𝐥𝐲 𝐣𝐨𝐢𝐧𝐞𝐝 𝐚𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬.\n\n"
+        f"𝐘𝐨𝐮 𝐡𝐚𝐯𝐞 𝐬𝐮𝐜𝐜𝐞𝐬𝐬𝐟𝐮𝐥𝐥𝐲 𝐣𝐨𝐢𝐧𝐞𝐝 𝐚𝐥𝐥 {TOTAL_SUBSCRIPTIONS} 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬/𝐠𝐫𝐨𝐮𝐩𝐬.\n\n"
         f"📌 𝐐𝐮𝐢𝐜𝐤 𝐆𝐮𝐢𝐝𝐞:\n"
         f"• 𝐔𝐬𝐞 𝐦𝐞𝐧𝐮 𝐛𝐮𝐭𝐭𝐨𝐧𝐬 𝐭𝐨 𝐧𝐚𝐯𝐢𝐠𝐚𝐭𝐞\n"
         f"• /𝐡𝐞𝐥𝐩 𝐟𝐨𝐫 𝐦𝐨𝐫𝐞 𝐢𝐧𝐟𝐨𝐫𝐦𝐚𝐭𝐢𝐨𝐧\n"
-        f"• 📁 𝐌𝐲 𝐅𝐢𝐥𝐞𝐬 𝐭𝐨 𝐯𝐢𝐞𝐰 𝐚𝐜𝐜𝐞𝐬𝐬𝐞𝐝 𝐟𝐢𝐥𝐞𝐬"
+        f"• 📁 𝐌𝐲 𝐅𝐢𝐥𝐞𝐬 𝐭𝐨 𝐯𝐢𝐞𝐰 𝐚𝐜𝐜𝐞𝐬𝐬𝐞𝐝 𝐟𝐢𝐥𝐞𝐬\n\n"
+        f"⚠️ 𝐍𝐨𝐭𝐞: 𝐈𝐟 𝐲𝐨𝐮 𝐥𝐞𝐚𝐯𝐞 𝐚𝐧𝐲 𝐜𝐡𝐚𝐧𝐧𝐞𝐥/𝐠𝐫𝐨𝐮𝐩, 𝐲𝐨𝐮 𝐰𝐢𝐥𝐥 𝐥𝐨𝐬𝐞 𝐚𝐜𝐜𝐞𝐬𝐬 𝐢𝐦𝐦𝐞𝐝𝐢𝐚𝐭𝐞𝐥𝐲!"
     )
     
     # Set appropriate keyboard based on user
@@ -399,13 +432,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE, link_id: str):
     """Handle file link access - STRICT SUBSCRIPTION CHECK."""
-    # Check group permission
+    # Check group permission - only private chats allowed
     if not await check_group_permission(update):
         return
     
     user_id = update.effective_user.id
     
-    # FORCE SUBSCRIPTION CHECK - User MUST join channels first
+    # FORCE SUBSCRIPTION CHECK - User MUST join all channels/groups first
     if not await force_subscription_check(update, context):
         return
     
@@ -448,17 +481,13 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = query.from_user.id
     callback_data = query.data
+    user = query.from_user
     
     if callback_data == "verify_subscription":
-        # Check which channels are still unjoined
-        unjoined_channels = await get_unjoined_channels(user_id, context)
-        unjoined_indices = [CHANNELS.index(ch) for ch in unjoined_channels if ch in CHANNELS]
+        # Check subscription and detect changes
+        unjoined_entities = await check_subscription_change(user_id, user.username, user.first_name, context)
         
-        if not unjoined_indices:
-            # Notify admin that user completed all joins
-            user = query.from_user
-            await notify_admin_channel_join(user_id, user.username, user.first_name, context)
-            
+        if not unjoined_entities:
             await query.edit_message_text(
                 f"✅ 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧 𝐕𝐞𝐫𝐢𝐟𝐢𝐞𝐝!\n\n"
                 f"𝐍𝐨𝐰 𝐲𝐨𝐮 𝐜𝐚𝐧 𝐚𝐜𝐜𝐞𝐬𝐬 𝐚𝐥𝐥 𝐟𝐢𝐥𝐞𝐬.\n"
@@ -466,21 +495,21 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
             )
         else:
-            # Create list of channel names for display
-            channel_list = ""
-            for i, idx in enumerate(unjoined_indices, 1):
-                channel_list += f"{i}. {CHANNEL_DISPLAY_NAMES[idx]}\n"
+            # Create list of entity names for display
+            entity_list = ""
+            for i, entity in enumerate(unjoined_entities, 1):
+                entity_list += f"{i}. {entity['name']}\n"
             
             await query.edit_message_text(
                 f"❌ 𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐭𝐢𝐨𝐧 𝐅𝐚𝐢𝐥𝐞𝐝!\n\n"
-                f"𝐘𝐨𝐮 𝐡𝐚𝐯𝐞𝐧'𝐭 𝐣𝐨𝐢𝐧𝐞𝐝 𝐚𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐲𝐞𝐭.\n\n"
-                f"𝐏𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐭𝐡𝐞𝐬𝐞 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬:\n\n"
-                f"{channel_list}\n"
+                f"𝐘𝐨𝐮 𝐡𝐚𝐯𝐞𝐧'𝐭 𝐣𝐨𝐢𝐧𝐞𝐝 𝐚𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬/𝐠𝐫𝐨𝐮𝐩𝐬 𝐲𝐞𝐭.\n\n"
+                f"𝐏𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐭𝐡𝐞𝐬𝐞:\n\n"
+                f"{entity_list}\n"
                 f"𝐀𝐟𝐭𝐞𝐫 𝐣𝐨𝐢𝐧𝐢𝐧𝐠, 𝐜𝐥𝐢𝐜𝐤 𝐕𝐞𝐫𝐢𝐟𝐲 𝐚𝐠𝐚𝐢𝐧.\n\n"
                 f"🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
             )
             # Show subscription buttons again
-            await ask_for_subscription_callback(query, context, unjoined_indices)
+            await ask_for_subscription_callback(query, context, unjoined_entities)
     
     elif callback_data.startswith("verify_file_"):
         link_id = callback_data.replace("verify_file_", "")
@@ -491,15 +520,10 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         
-        # Check which channels are still unjoined
-        unjoined_channels = await get_unjoined_channels(user_id, context)
-        unjoined_indices = [CHANNELS.index(ch) for ch in unjoined_channels if ch in CHANNELS]
+        # Check subscription and detect changes
+        unjoined_entities = await check_subscription_change(user_id, user.username, user.first_name, context)
         
-        if not unjoined_indices:
-            # Notify admin that user completed all joins
-            user = query.from_user
-            await notify_admin_channel_join(user_id, user.username, user.first_name, context)
-            
+        if not unjoined_entities:
             file_id = links_data[link_id]["file_id"]
             
             if file_id not in files_data:
@@ -528,34 +552,34 @@ async def verify_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 files_data[file_id]["accessed_by"] = user_files
                 save_files_data()
         else:
-            # Create list of channel names for display
-            channel_list = ""
-            for i, idx in enumerate(unjoined_indices, 1):
-                channel_list += f"{i}. {CHANNEL_DISPLAY_NAMES[idx]}\n"
+            # Create list of entity names for display
+            entity_list = ""
+            for i, entity in enumerate(unjoined_entities, 1):
+                entity_list += f"{i}. {entity['name']}\n"
             
             await query.edit_message_text(
                 f"❌ 𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐭𝐢𝐨𝐧 𝐅𝐚𝐢𝐥𝐞𝐝!\n\n"
-                f"𝐘𝐨𝐮 𝐡𝐚𝐯𝐞𝐧'𝐭 𝐣𝐨𝐢𝐧𝐞𝐝 𝐚𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐲𝐞𝐭.\n\n"
-                f"𝐓𝐨 𝐠𝐞𝐭 𝐭𝐡𝐞 𝐟𝐢𝐥𝐞, 𝐩𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐭𝐡𝐞𝐬𝐞 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬:\n\n"
-                f"{channel_list}\n"
+                f"𝐘𝐨𝐮 𝐡𝐚𝐯𝐞𝐧'𝐭 𝐣𝐨𝐢𝐧𝐞𝐝 𝐚𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬/𝐠𝐫𝐨𝐮𝐩𝐬 𝐲𝐞𝐭.\n\n"
+                f"𝐓𝐨 𝐠𝐞𝐭 𝐭𝐡𝐞 𝐟𝐢𝐥𝐞, 𝐩𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐭𝐡𝐞𝐬𝐞:\n\n"
+                f"{entity_list}\n"
                 f"𝐀𝐟𝐭𝐞𝐫 𝐣𝐨𝐢𝐧𝐢𝐧𝐠, 𝐜𝐥𝐢𝐜𝐤 𝐕𝐞𝐫𝐢𝐟𝐲 𝐚𝐠𝐚𝐢𝐧.\n\n"
                 f"🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
             )
             # Show subscription buttons again with file context
-            await ask_for_subscription_with_file_callback(query, context, link_id, unjoined_indices)
+            await ask_for_subscription_with_file_callback(query, context, link_id, unjoined_entities)
 
-async def ask_for_subscription_callback(query, context: ContextTypes.DEFAULT_TYPE, unjoined_indices=None):
-    """Ask for subscription via callback - only shows unjoined channels."""
+async def ask_for_subscription_callback(query, context: ContextTypes.DEFAULT_TYPE, unjoined_entities=None):
+    """Ask for subscription via callback - only shows unjoined entities."""
     user_id = query.from_user.id
     
-    if unjoined_indices is None:
-        unjoined_channels = await get_unjoined_channels(user_id, context)
-        unjoined_indices = [CHANNELS.index(ch) for ch in unjoined_channels if ch in CHANNELS]
+    if unjoined_entities is None:
+        user = query.from_user
+        unjoined_entities = await check_subscription_change(user_id, user.username, user.first_name, context)
     
-    if not unjoined_indices:
+    if not unjoined_entities:
         await query.message.reply_text(
-            f"✅ 𝐀𝐥𝐥 𝐂𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐉𝐨𝐢𝐧𝐞𝐝!\n\n"
-            f"𝐘𝐨𝐮 𝐡𝐚𝐯𝐞 𝐬𝐮𝐜𝐜𝐞𝐬𝐬𝐟𝐮𝐥𝐥𝐲 𝐣𝐨𝐢𝐧𝐞𝐝 𝐚𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬.\n"
+            f"✅ 𝐀𝐥𝐥 𝐂𝐡𝐚𝐧𝐧𝐞𝐥𝐬/𝐆𝐫𝐨𝐮𝐩𝐬 𝐉𝐨𝐢𝐧𝐞𝐝!\n\n"
+            f"𝐘𝐨𝐮 𝐡𝐚𝐯𝐞 𝐬𝐮𝐜𝐜𝐞𝐬𝐬𝐟𝐮𝐥𝐥𝐲 𝐣𝐨𝐢𝐧𝐞𝐝 𝐚𝐥𝐥 {TOTAL_SUBSCRIPTIONS} 𝐞𝐧𝐭𝐢𝐭𝐢𝐞𝐬.\n"
             f"𝐔𝐬𝐞 /𝐬𝐭𝐚𝐫𝐭 𝐭𝐨 𝐚𝐜𝐜𝐞𝐬𝐬 𝐟𝐢𝐥𝐞𝐬.",
             reply_markup=get_user_keyboard()
         )
@@ -563,39 +587,44 @@ async def ask_for_subscription_callback(query, context: ContextTypes.DEFAULT_TYP
     
     keyboard = []
     
-    for idx in unjoined_indices:
-        keyboard.append([InlineKeyboardButton(
-            f"📢 𝐉𝐨𝐢𝐧 {CHANNEL_DISPLAY_NAMES[idx]}",
-            url=f"https://t.me/{CHANNELS[idx].replace('@', '')}"
-        )])
+    for entity in unjoined_entities:
+        if entity["link"]:
+            keyboard.append([InlineKeyboardButton(
+                f"📢 𝐉𝐨𝐢𝐧 {entity['name']}",
+                url=entity["link"]
+            )])
+        else:
+            keyboard.append([InlineKeyboardButton(
+                f"📢 𝐉𝐨𝐢𝐧 {entity['name']}",
+                url="https://t.me/"
+            )])
     
     keyboard.append([InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧", callback_data="verify_subscription")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    total_channels = len(CHANNELS)
-    joined_count = total_channels - len(unjoined_indices)
+    joined_count = TOTAL_SUBSCRIPTIONS - len(unjoined_entities)
     
     await query.message.reply_text(
-        f"📋 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐭𝐢𝐨𝐧 𝐑𝐞𝐪𝐮𝐢𝐫𝐞𝐝\n\n"
-        f"📊 𝐏𝐫𝐨𝐠𝐫𝐞𝐬𝐬: {joined_count}/{total_channels} 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐣𝐨𝐢𝐧𝐞𝐝\n\n"
-        f"⚠️ 𝐏𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐭𝐡𝐞 𝐟𝐨𝐥𝐥𝐨𝐰𝐢𝐧𝐠 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐭𝐨 𝐜𝐨𝐧𝐭𝐢𝐧𝐮𝐞:\n\n"
+        f"📋 𝐕𝐞𝐫𝐢𝐟𝐢𝐜𝐚𝐭𝐢𝐨𝐧 𝐑𝐞𝐪𝐮𝐢𝐫𝐞𝐝\n\n"
+        f"📊 𝐏𝐫𝐨𝐠𝐫𝐞𝐬𝐬: {joined_count}/{TOTAL_SUBSCRIPTIONS} 𝐣𝐨𝐢𝐧𝐞𝐝\n\n"
+        f"⚠️ 𝐏𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐭𝐡𝐞 𝐟𝐨𝐥𝐥𝐨𝐰𝐢𝐧𝐠 𝐭𝐨 𝐜𝐨𝐧𝐭𝐢𝐧𝐮𝐞:\n\n"
         f"𝐀𝐟𝐭𝐞𝐫 𝐣𝐨𝐢𝐧𝐢𝐧𝐠, 𝐜𝐥𝐢𝐜𝐤 𝐭𝐡𝐞 𝐕𝐞𝐫𝐢𝐟𝐲 𝐛𝐮𝐭𝐭𝐨𝐧 𝐛𝐞𝐥𝐨𝐰.\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}",
         reply_markup=reply_markup
     )
 
-async def ask_for_subscription_with_file_callback(query, context: ContextTypes.DEFAULT_TYPE, link_id: str, unjoined_indices=None):
+async def ask_for_subscription_with_file_callback(query, context: ContextTypes.DEFAULT_TYPE, link_id: str, unjoined_entities=None):
     """Ask for subscription with file context via callback."""
     user_id = query.from_user.id
+    user = query.from_user
     
-    if unjoined_indices is None:
-        unjoined_channels = await get_unjoined_channels(user_id, context)
-        unjoined_indices = [CHANNELS.index(ch) for ch in unjoined_channels if ch in CHANNELS]
+    if unjoined_entities is None:
+        unjoined_entities = await check_subscription_change(user_id, user.username, user.first_name, context)
     
-    if not unjoined_indices:
-        # User has joined all channels, send file directly
+    if not unjoined_entities:
+        # User has joined all, send file directly
         file_id = links_data[link_id]["file_id"]
         await send_file_to_user_callback(query, file_id)
         
@@ -613,27 +642,32 @@ async def ask_for_subscription_with_file_callback(query, context: ContextTypes.D
     
     keyboard = []
     
-    for idx in unjoined_indices:
-        keyboard.append([InlineKeyboardButton(
-            f"📢 𝐉𝐨𝐢𝐧 {CHANNEL_DISPLAY_NAMES[idx]}",
-            url=f"https://t.me/{CHANNELS[idx].replace('@', '')}"
-        )])
+    for entity in unjoined_entities:
+        if entity["link"]:
+            keyboard.append([InlineKeyboardButton(
+                f"📢 𝐉𝐨𝐢𝐧 {entity['name']}",
+                url=entity["link"]
+            )])
+        else:
+            keyboard.append([InlineKeyboardButton(
+                f"📢 𝐉𝐨𝐢𝐧 {entity['name']}",
+                url="https://t.me/"
+            )])
     
     keyboard.append([InlineKeyboardButton("✅ 𝐕𝐞𝐫𝐢𝐟𝐲 & 𝐆𝐞𝐭 𝐅𝐢𝐥𝐞", callback_data=f"verify_file_{link_id}")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    total_channels = len(CHANNELS)
-    joined_count = total_channels - len(unjoined_indices)
+    joined_count = TOTAL_SUBSCRIPTIONS - len(unjoined_entities)
     
     file_id = links_data[link_id]["file_id"]
     file_name = files_data[file_id].get('name', '𝐅𝐢𝐥𝐞')
     
     await query.message.reply_text(
-        f"📋 𝐅𝐢𝐥𝐞 𝐀𝐜𝐜𝐞𝐬𝐬 𝐑𝐞𝐪𝐮𝐢𝐫𝐞𝐬 𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝐉𝐨𝐢𝐧𝐢𝐧𝐠\n\n"
+        f"📋 𝐅𝐢𝐥𝐞 𝐀𝐜𝐜𝐞𝐬𝐬 𝐑𝐞𝐪𝐮𝐢𝐫𝐞𝐬 𝐉𝐨𝐢𝐧𝐢𝐧𝐠\n\n"
         f"📁 𝐅𝐢𝐥𝐞: {file_name}\n"
-        f"📊 𝐏𝐫𝐨𝐠𝐫𝐞𝐬𝐬: {joined_count}/{total_channels} 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐣𝐨𝐢𝐧𝐞𝐝\n\n"
-        f"⚠️ 𝐓𝐨 𝐠𝐞𝐭 𝐭𝐡𝐢𝐬 𝐟𝐢𝐥𝐞, 𝐩𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐭𝐡𝐞 𝐟𝐨𝐥𝐥𝐨𝐰𝐢𝐧𝐠 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬:\n\n"
+        f"📊 𝐏𝐫𝐨𝐠𝐫𝐞𝐬𝐬: {joined_count}/{TOTAL_SUBSCRIPTIONS} 𝐣𝐨𝐢𝐧𝐞𝐝\n\n"
+        f"⚠️ 𝐓𝐨 𝐠𝐞𝐭 𝐭𝐡𝐢𝐬 𝐟𝐢𝐥𝐞, 𝐩𝐥𝐞𝐚𝐬𝐞 𝐣𝐨𝐢𝐧 𝐭𝐡𝐞 𝐟𝐨𝐥𝐥𝐨𝐰𝐢𝐧𝐠:\n\n"
         f"𝐀𝐟𝐭𝐞𝐫 𝐣𝐨𝐢𝐧𝐢𝐧𝐠, 𝐜𝐥𝐢𝐜𝐤 𝐭𝐡𝐞 𝐕𝐞𝐫𝐢𝐟𝐲 & 𝐆𝐞𝐭 𝐅𝐢𝐥𝐞 𝐛𝐮𝐭𝐭𝐨𝐧.\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}",
@@ -826,7 +860,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔗 𝐓𝐨𝐭𝐚𝐥 𝐋𝐢𝐧𝐤𝐬: {total_links}\n"
         f"📥 𝐓𝐨𝐭𝐚𝐥 𝐃𝐨𝐰𝐧𝐥𝐨𝐚𝐝𝐬: {total_downloads}\n"
         f"👥 𝐓𝐨𝐭𝐚𝐥 𝐔𝐬𝐞𝐫𝐬: {total_users}\n"
-        f"📢 𝐂𝐡𝐚𝐧𝐧𝐞𝐥𝐬: {len(CHANNELS)}\n\n"
+        f"📢 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧 𝐄𝐧𝐭𝐢𝐭𝐢𝐞𝐬: {TOTAL_SUBSCRIPTIONS}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}"
     )
@@ -948,34 +982,28 @@ async def admin_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 𝐘𝐨𝐮 𝐚𝐫𝐞 𝐧𝐨𝐭 𝐚𝐮𝐭𝐡𝐨𝐫𝐢𝐳𝐞𝐝!")
         return
     
-    keyboard = [
-        [InlineKeyboardButton("💬 𝐆𝐫𝐨𝐮𝐩 𝐂𝐡𝐚𝐭", callback_data="settings_group")],
-        [InlineKeyboardButton("➕ 𝐀𝐝𝐝 𝐀𝐥𝐥𝐨𝐰𝐞𝐝 𝐆𝐫𝐨𝐮𝐩", callback_data="settings_add_group")],
-        [InlineKeyboardButton("❌ 𝐑𝐞𝐦𝐨𝐯𝐞 𝐀𝐥𝐥𝐨𝐰𝐞𝐝 𝐆𝐫𝐨𝐮𝐩", callback_data="settings_remove_group")],
-        [InlineKeyboardButton("📋 𝐕𝐢𝐞𝐰 𝐀𝐥𝐥𝐨𝐰𝐞𝐝 𝐆𝐫𝐨𝐮𝐩𝐬", callback_data="settings_view_groups")],
-        [InlineKeyboardButton("🔙 𝐁𝐚𝐜𝐤", callback_data="settings_back")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    group_status = "✅ 𝐄𝐧𝐚𝐛𝐥𝐞𝐝" if settings_data.get("group_chat_enabled") else "❌ 𝐃𝐢𝐬𝐚𝐛𝐥𝐞𝐝"
-    
+    # Settings are minimal since group chat is disabled
     await update.message.reply_text(
         f"⚙️ 𝐁𝐨𝐭 𝐒𝐞𝐭𝐭𝐢𝐧𝐠𝐬\n\n"
-        f"💬 𝐆𝐫𝐨𝐮𝐩 𝐂𝐡𝐚𝐭: {group_status}\n"
-        f"👥 𝐀𝐥𝐥𝐨𝐰𝐞𝐝 𝐆𝐫𝐨𝐮𝐩𝐬: {len(settings_data.get('allowed_groups', []))}\n\n"
-        f"𝐒𝐞𝐥𝐞𝐜𝐭 𝐚𝐧 𝐨𝐩𝐭𝐢𝐨𝐧:",
-        reply_markup=reply_markup
+        f"💬 𝐆𝐫𝐨𝐮𝐩 𝐂𝐡𝐚𝐭: ❌ 𝐏𝐞𝐫𝐦𝐚𝐧𝐞𝐧𝐭𝐥𝐲 𝐃𝐢𝐬𝐚𝐛𝐥𝐞𝐝\n"
+        f"👥 𝐓𝐨𝐭𝐚𝐥 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧𝐬: {TOTAL_SUBSCRIPTIONS}\n\n"
+        f"📋 𝐂𝐮𝐫𝐫𝐞𝐧𝐭 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧𝐬:\n",
+        reply_markup=get_admin_keyboard()
     )
+    
+    # List all subscription entities
+    for i, entity in enumerate(SUBSCRIPTION_ENTITIES, 1):
+        await update.message.reply_text(f"{i}. {entity['name']} - {entity['id']}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle all text messages."""
+    # Check group permission - only private chats allowed
     if not await check_group_permission(update):
         return
     
     user_id = update.effective_user.id
     
-    # FORCE SUBSCRIPTION CHECK - User must join channels first (except admin)
+    # FORCE SUBSCRIPTION CHECK - User must join all channels/groups first (except admin)
     if user_id != ADMIN_ID:
         if not await force_subscription_check(update, context):
             return
@@ -991,27 +1019,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if context.user_data.get('awaiting_group_id'):
-        try:
-            group_id = int(message_text)
-            allowed_groups = settings_data.get("allowed_groups", [])
-            if group_id not in allowed_groups:
-                allowed_groups.append(group_id)
-                settings_data["allowed_groups"] = allowed_groups
-                save_settings_data()
-                await update.message.reply_text(
-                    f"✅ 𝐆𝐫𝐨𝐮𝐩 {group_id} 𝐚𝐝𝐝𝐞𝐝 𝐭𝐨 𝐚𝐥𝐥𝐨𝐰𝐞𝐝 𝐥𝐢𝐬𝐭.",
-                    reply_markup=get_admin_keyboard()
-                )
-            else:
-                await update.message.reply_text(
-                    f"⚠️ 𝐆𝐫𝐨𝐮𝐩 {group_id} 𝐢𝐬 𝐚𝐥𝐫𝐞𝐚𝐝𝐲 𝐢𝐧 𝐚𝐥𝐥𝐨𝐰𝐞𝐝 𝐥𝐢𝐬𝐭.",
-                    reply_markup=get_admin_keyboard()
-                )
-            context.user_data.pop('awaiting_group_id', None)
-        except ValueError:
-            await update.message.reply_text(
-                "❌ 𝐈𝐧𝐯𝐚𝐥𝐢𝐝 𝐠𝐫𝐨𝐮𝐩 𝐈𝐃. 𝐏𝐥𝐞𝐚𝐬𝐞 𝐬𝐞𝐧𝐝 𝐚 𝐧𝐮𝐦𝐛𝐞𝐫."
-            )
+        # This won't be used since group chat is disabled
+        context.user_data.pop('awaiting_group_id', None)
         return
     
     if context.user_data.get('awaiting_delete_multiple'):
@@ -1197,7 +1206,7 @@ async def user_my_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
-    # FORCE SUBSCRIPTION CHECK - User must join channels first
+    # FORCE SUBSCRIPTION CHECK - User must join all channels/groups first
     if not await force_subscription_check(update, context):
         return
     
@@ -1227,7 +1236,7 @@ async def user_my_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"📭 𝐍𝐨 𝐅𝐢𝐥𝐞𝐬 𝐀𝐜𝐜𝐞𝐬𝐬𝐞𝐝 𝐘𝐞𝐭\n\n"
             f"𝐘𝐨𝐮 𝐡𝐚𝐯𝐞𝐧'𝐭 𝐚𝐜𝐜𝐞𝐬𝐬𝐞𝐝 𝐚𝐧𝐲 𝐟𝐢𝐥𝐞𝐬 𝐲𝐞𝐭.\n"
-            f"𝐔𝐬𝐞 /𝐬𝐭𝐚𝐫𝐭 𝐚𝐧𝐝 𝐣𝐨𝐢𝐧 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬 𝐭𝐨 𝐚𝐜𝐜𝐞𝐬𝐬 𝐟𝐢𝐥𝐞𝐬.\n\n"
+            f"𝐔𝐬𝐞 /𝐬𝐭𝐚𝐫𝐭 𝐚𝐧𝐝 𝐣𝐨𝐢𝐧 𝐚𝐥𝐥 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬/𝐠𝐫𝐨𝐮𝐩𝐬 𝐭𝐨 𝐚𝐜𝐜𝐞𝐬𝐬 𝐟𝐢𝐥𝐞𝐬.\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🤖 𝐁𝐨𝐭 𝐛𝐲: {BOT_DISPLAY_NAME}",
             reply_markup=get_user_keyboard()
@@ -1421,113 +1430,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "❌ 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭 𝐜𝐚𝐧𝐜𝐞𝐥𝐞𝐝.",
             reply_markup=get_admin_keyboard()
-        )
-    
-    elif callback_data == "settings_group":
-        if user_id != ADMIN_ID:
-            return
-        
-        current = settings_data.get("group_chat_enabled", False)
-        settings_data["group_chat_enabled"] = not current
-        save_settings_data()
-        
-        status = "✅ 𝐄𝐧𝐚𝐛𝐥𝐞𝐝" if settings_data["group_chat_enabled"] else "❌ 𝐃𝐢𝐬𝐚𝐛𝐥𝐞𝐝"
-        await query.edit_message_text(
-            f"✅ 𝐆𝐫𝐨𝐮𝐩 𝐜𝐡𝐚𝐭 𝐢𝐬 𝐧𝐨𝐰 {status}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 𝐁𝐚𝐜𝐤", callback_data="settings_back")]])
-        )
-    
-    elif callback_data == "settings_add_group":
-        if user_id != ADMIN_ID:
-            return
-        
-        context.user_data['awaiting_group_id'] = True
-        await query.edit_message_text(
-            f"📝 𝐀𝐝𝐝 𝐀𝐥𝐥𝐨𝐰𝐞𝐝 𝐆𝐫𝐨𝐮𝐩\n\n"
-            f"𝐏𝐥𝐞𝐚𝐬𝐞 𝐬𝐞𝐧𝐝 𝐭𝐡𝐞 𝐠𝐫𝐨𝐮𝐩 𝐈𝐃 𝐲𝐨𝐮 𝐰𝐚𝐧𝐭 𝐭𝐨 𝐚𝐥𝐥𝐨𝐰.\n\n"
-            f"𝐘𝐨𝐮 𝐜𝐚𝐧 𝐠𝐞𝐭 𝐠𝐫𝐨𝐮𝐩 𝐈𝐃 𝐛𝐲:\n"
-            f"𝟏. 𝐀𝐝𝐝 @username_to_id_bot 𝐭𝐨 𝐭𝐡𝐞 𝐠𝐫𝐨𝐮𝐩\n"
-            f"𝟐. 𝐒𝐞𝐧𝐝 /𝐢𝐝 𝐢𝐧 𝐭𝐡𝐞 𝐠𝐫𝐨𝐮𝐩\n\n"
-            f"𝐓𝐲𝐩𝐞 /𝐜𝐚𝐧𝐜𝐞𝐥 𝐭𝐨 𝐚𝐛𝐨𝐫𝐭."
-        )
-    
-    elif callback_data == "settings_remove_group":
-        if user_id != ADMIN_ID:
-            return
-        
-        allowed = settings_data.get("allowed_groups", [])
-        if not allowed:
-            await query.edit_message_text(
-                "❌ 𝐍𝐨 𝐠𝐫𝐨𝐮𝐩𝐬 𝐚𝐫𝐞 𝐜𝐮𝐫𝐫𝐞𝐧𝐭𝐥𝐲 𝐚𝐥𝐥𝐨𝐰𝐞𝐝.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 𝐁𝐚𝐜𝐤", callback_data="settings_back")]])
-            )
-            return
-        
-        keyboard = []
-        for group_id in allowed[:10]:
-            keyboard.append([InlineKeyboardButton(
-                f"❌ {group_id}",
-                callback_data=f"remove_group_{group_id}"
-            )])
-        keyboard.append([InlineKeyboardButton("🔙 𝐁𝐚𝐜𝐤", callback_data="settings_back")])
-        
-        await query.edit_message_text(
-            "📋 𝐒𝐞𝐥𝐞𝐜𝐭 𝐠𝐫𝐨𝐮𝐩 𝐭𝐨 𝐫𝐞𝐦𝐨𝐯𝐞:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    
-    elif callback_data.startswith("remove_group_"):
-        if user_id != ADMIN_ID:
-            return
-        
-        group_id = int(callback_data.replace("remove_group_", ""))
-        allowed = settings_data.get("allowed_groups", [])
-        if group_id in allowed:
-            allowed.remove(group_id)
-            settings_data["allowed_groups"] = allowed
-            save_settings_data()
-            await query.edit_message_text(
-                f"✅ 𝐆𝐫𝐨𝐮𝐩 {group_id} 𝐫𝐞𝐦𝐨𝐯𝐞𝐝 𝐟𝐫𝐨𝐦 𝐚𝐥𝐥𝐨𝐰𝐞𝐝 𝐥𝐢𝐬𝐭.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 𝐁𝐚𝐜𝐤", callback_data="settings_back")]])
-            )
-    
-    elif callback_data == "settings_view_groups":
-        if user_id != ADMIN_ID:
-            return
-        
-        allowed = settings_data.get("allowed_groups", [])
-        if not allowed:
-            text = "📋 𝐍𝐨 𝐠𝐫𝐨𝐮𝐩𝐬 𝐚𝐫𝐞 𝐜𝐮𝐫𝐫𝐞𝐧𝐭𝐥𝐲 𝐚𝐥𝐥𝐨𝐰𝐞𝐝."
-        else:
-            text = "📋 𝐀𝐥𝐥𝐨𝐰𝐞𝐝 𝐆𝐫𝐨𝐮𝐩𝐬:\n\n"
-            for i, group_id in enumerate(allowed, 1):
-                text += f"{i}. {group_id}\n"
-        
-        await query.edit_message_text(
-            text,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 𝐁𝐚𝐜𝐤", callback_data="settings_back")]])
-        )
-    
-    elif callback_data == "settings_back":
-        if user_id != ADMIN_ID:
-            return
-        
-        keyboard = [
-            [InlineKeyboardButton("💬 𝐆𝐫𝐨𝐮𝐩 𝐂𝐡𝐚𝐭", callback_data="settings_group")],
-            [InlineKeyboardButton("➕ 𝐀𝐝𝐝 𝐀𝐥𝐥𝐨𝐰𝐞𝐝 𝐆𝐫𝐨𝐮𝐩", callback_data="settings_add_group")],
-            [InlineKeyboardButton("❌ 𝐑𝐞𝐦𝐨𝐯𝐞 𝐀𝐥𝐥𝐨𝐰𝐞𝐝 𝐆𝐫𝐨𝐮𝐩", callback_data="settings_remove_group")],
-            [InlineKeyboardButton("📋 𝐕𝐢𝐞𝐰 𝐀𝐥𝐥𝐨𝐰𝐞𝐝 𝐆𝐫𝐨𝐮𝐩𝐬", callback_data="settings_view_groups")],
-            [InlineKeyboardButton("🔙 𝐁𝐚𝐜𝐤", callback_data="settings_back")]
-        ]
-        
-        group_status = "✅ 𝐄𝐧𝐚𝐛𝐥𝐞𝐝" if settings_data.get("group_chat_enabled") else "❌ 𝐃𝐢𝐬𝐚𝐛𝐥𝐞𝐝"
-        
-        await query.edit_message_text(
-            f"⚙️ 𝐁𝐨𝐭 𝐒𝐞𝐭𝐭𝐢𝐧𝐠𝐬\n\n"
-            f"💬 𝐆𝐫𝐨𝐮𝐩 𝐂𝐡𝐚𝐭: {group_status}\n"
-            f"👥 𝐀𝐥𝐥𝐨𝐰𝐞𝐝 𝐆𝐫𝐨𝐮𝐩𝐬: {len(settings_data.get('allowed_groups', []))}\n\n"
-            f"𝐒𝐞𝐥𝐞𝐜𝐭 𝐚𝐧 𝐨𝐩𝐭𝐢𝐨𝐧:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
     elif callback_data.startswith("genlink_"):
@@ -1841,7 +1743,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     
-    # FORCE SUBSCRIPTION CHECK - User must join channels first (except admin)
+    # FORCE SUBSCRIPTION CHECK - User must join all channels/groups first (except admin)
     if user_id != ADMIN_ID:
         if not await force_subscription_check(update, context):
             return
@@ -1856,21 +1758,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 𝐅𝐢𝐥𝐞𝐬 𝐋𝐢𝐬𝐭 - 𝐕𝐢𝐞𝐰 𝐚𝐥𝐥 𝐡𝐨𝐬𝐭𝐞𝐝 𝐟𝐢𝐥𝐞𝐬\n"
             f"📈 𝐒𝐭𝐚𝐭𝐬 - 𝐕𝐢𝐞𝐰 𝐛𝐨𝐭 𝐬𝐭𝐚𝐭𝐢𝐬𝐭𝐢𝐜𝐬\n"
             f"📋 𝐂𝐨𝐧𝐭𝐞𝐧𝐭 𝐌𝐚𝐧𝐚𝐠𝐞𝐫 - 𝐌𝐚𝐧𝐚𝐠𝐞 𝐜𝐨𝐧𝐭𝐞𝐧𝐭 (𝐃𝐞𝐥𝐞𝐭𝐞 𝐟𝐢𝐥𝐞𝐬/𝐥𝐢𝐧𝐤𝐬)\n"
-            f"📢 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭 - 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭 𝐦𝐞𝐬𝐬𝐚𝐠𝐞𝐬 𝐭𝐨 𝐚𝐥𝐥 𝐮𝐬𝐞𝐫𝐬\n"
-            f"⚙️ 𝐒𝐞𝐭𝐭𝐢𝐧𝐠𝐬 - 𝐁𝐨𝐭 𝐬𝐞𝐭𝐭𝐢𝐧𝐠𝐬 (𝐠𝐫𝐨𝐮𝐩 𝐩𝐞𝐫𝐦𝐢𝐬𝐬𝐢𝐨𝐧𝐬)\n\n"
+            f"📢 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭 - 𝐁𝐫𝐨𝐚𝐝𝐜𝐚𝐬𝐭 𝐦𝐞𝐬𝐬𝐚𝐠𝐞𝐬 𝐭𝐨 𝐚𝐥𝐥 𝐮𝐬𝐞𝐫𝐬\n\n"
             f"𝐄𝐚𝐬𝐲 𝐅𝐢𝐥𝐞 𝐇𝐨𝐬𝐭𝐢𝐧𝐠:\n"
             f"𝟏. 𝐂𝐥𝐢𝐜𝐤 𝐇𝐨𝐬𝐭 𝐅𝐢𝐥𝐞\n"
             f"𝟐. 𝐒𝐞𝐧𝐝 𝐭𝐡𝐞 𝐟𝐢𝐥𝐞\n"
             f"𝟑. 𝐄𝐧𝐭𝐞𝐫 𝐟𝐢𝐥𝐞 𝐧𝐚𝐦𝐞\n"
             f"𝟒. 𝐄𝐧𝐭𝐞𝐫 𝐜𝐚𝐩𝐭𝐢𝐨𝐧 (𝐨𝐩𝐭𝐢𝐨𝐧𝐚𝐥)\n"
             f"𝟓. 𝐋𝐢𝐧𝐤 𝐚𝐮𝐭𝐨𝐦𝐚𝐭𝐢𝐜𝐚𝐥𝐥𝐲 𝐠𝐞𝐧𝐞𝐫𝐚𝐭𝐞𝐝\n\n"
-            f"𝐃𝐞𝐥𝐞𝐭𝐞 𝐎𝐩𝐭𝐢𝐨𝐧𝐬:\n"
-            f"• 𝐒𝐢𝐧𝐠𝐥𝐞 𝐅𝐢𝐥𝐞 𝐃𝐞𝐥𝐞𝐭𝐢𝐨𝐧\n"
-            f"• 𝐌𝐮𝐥𝐭𝐢𝐩𝐥𝐞 𝐅𝐢𝐥𝐞 𝐃𝐞𝐥𝐞𝐭𝐢𝐨𝐧\n"
-            f"• 𝐀𝐥𝐥 𝐅𝐢𝐥𝐞𝐬 𝐃𝐞𝐥𝐞𝐭𝐢𝐨𝐧\n"
-            f"• 𝐀𝐥𝐥 𝐋𝐢𝐧𝐤𝐬 𝐃𝐞𝐥𝐞𝐭𝐢𝐨𝐧\n\n"
-            f"𝐍𝐨𝐭𝐢𝐟𝐢𝐜𝐚𝐭𝐢𝐨𝐧𝐬:\n"
-            f"• 𝐑𝐞𝐜𝐞𝐢𝐯𝐞 𝐚𝐥𝐞𝐫𝐭𝐬 𝐰𝐡𝐞𝐧 𝐮𝐬𝐞𝐫𝐬 𝐣𝐨𝐢𝐧 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬\n\n"
+            f"𝐅𝐨𝐫𝐜𝐞 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧:\n"
+            f"𝐔𝐬𝐞𝐫𝐬 𝐦𝐮𝐬𝐭 𝐣𝐨𝐢𝐧 𝐚𝐥𝐥 {TOTAL_SUBSCRIPTIONS} 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬/𝐠𝐫𝐨𝐮𝐩𝐬:\n"
+        )
+        
+        # List all subscription entities
+        for i, entity in enumerate(SUBSCRIPTION_ENTITIES, 1):
+            help_text += f"   {i}. {entity['name']} - {entity['id']}\n"
+        
+        help_text += (
+            f"\n📊 𝐉𝐨𝐢𝐧/𝐋𝐞𝐚𝐯𝐞 𝐓𝐫𝐚𝐜𝐤𝐢𝐧𝐠:\n"
+            f"• 𝐀𝐝𝐦𝐢𝐧 𝐠𝐞𝐭𝐬 𝐧𝐨𝐭𝐢𝐟𝐢𝐞𝐝 𝐰𝐡𝐞𝐧 𝐮𝐬𝐞𝐫 𝐣𝐨𝐢𝐧𝐬/𝐥𝐞𝐚𝐯𝐞𝐬 𝐚𝐧𝐲\n"
+            f"• 𝐔𝐬𝐞𝐫 𝐥𝐨𝐬𝐞𝐬 𝐚𝐜𝐜𝐞𝐬𝐬 𝐢𝐦𝐦𝐞𝐝𝐢𝐚𝐭𝐞𝐥𝐲 𝐢𝐟 𝐭𝐡𝐞𝐲 𝐥𝐞𝐚𝐯𝐞\n\n"
             f"𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐬:\n"
             f"/𝐜𝐚𝐧𝐜𝐞𝐥 - 𝐂𝐚𝐧𝐜𝐞𝐥 𝐜𝐮𝐫𝐫𝐞𝐧𝐭 𝐚𝐜𝐭𝐢𝐨𝐧\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1883,9 +1789,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"𝐇𝐨𝐰 𝐭𝐨 𝐠𝐞𝐭 𝐟𝐢𝐥𝐞𝐬:\n"
             f"𝟏. 𝐆𝐞𝐭 𝐚 𝐟𝐢𝐥𝐞 𝐥𝐢𝐧𝐤 𝐟𝐫𝐨𝐦 𝐚𝐝𝐦𝐢𝐧\n"
             f"𝟐. 𝐂𝐥𝐢𝐜𝐤 𝐭𝐡𝐞 𝐥𝐢𝐧𝐤 𝐭𝐨 𝐨𝐩𝐞𝐧 𝐛𝐨𝐭\n"
-            f"𝟑. 𝐉𝐨𝐢𝐧 𝐚𝐥𝐥 𝐫𝐞𝐪𝐮𝐢𝐫𝐞𝐝 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬\n"
+            f"𝟑. 𝐉𝐨𝐢𝐧 𝐚𝐥𝐥 {TOTAL_SUBSCRIPTIONS} 𝐫𝐞𝐪𝐮𝐢𝐫𝐞𝐝 𝐜𝐡𝐚𝐧𝐧𝐞𝐥𝐬/𝐠𝐫𝐨𝐮𝐩𝐬\n"
             f"𝟒. 𝐂𝐥𝐢𝐜𝐤 𝐕𝐞𝐫𝐢𝐟𝐲 𝐒𝐮𝐛𝐬𝐜𝐫𝐢𝐩𝐭𝐢𝐨𝐧\n"
             f"𝟓. 𝐆𝐞𝐭 𝐲𝐨𝐮𝐫 𝐟𝐢𝐥𝐞 𝐢𝐧𝐬𝐭𝐚𝐧𝐭𝐥𝐲\n\n"
+            f"⚠️ 𝐈𝐌𝐏𝐎𝐑𝐓𝐀𝐍𝐓:\n"
+            f"• 𝐈𝐟 𝐲𝐨𝐮 𝐥𝐞𝐚𝐯𝐞 𝐚𝐧𝐲 𝐜𝐡𝐚𝐧𝐧𝐞𝐥/𝐠𝐫𝐨𝐮𝐩, 𝐲𝐨𝐮 𝐰𝐢𝐥𝐥 𝐥𝐨𝐬𝐞 𝐚𝐜𝐜𝐞𝐬𝐬 𝐢𝐦𝐦𝐞𝐝𝐢𝐚𝐭𝐞𝐥𝐲\n"
+            f"• 𝐘𝐨𝐮 𝐦𝐮𝐬𝐭 𝐣𝐨𝐢𝐧 𝐀𝐋𝐋 {TOTAL_SUBSCRIPTIONS} 𝐭𝐨 𝐮𝐬𝐞 𝐭𝐡𝐞 𝐛𝐨𝐭\n\n"
             f"𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐬:\n"
             f"/𝐬𝐭𝐚𝐫𝐭 - 𝐒𝐭𝐚𝐫𝐭 𝐛𝐨𝐭\n"
             f"📁 𝐌𝐲 𝐅𝐢𝐥𝐞𝐬 - 𝐕𝐢𝐞𝐰 𝐲𝐨𝐮𝐫 𝐚𝐜𝐜𝐞𝐬𝐬𝐞𝐝 𝐟𝐢𝐥𝐞𝐬\n\n"
