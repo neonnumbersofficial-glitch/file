@@ -43,7 +43,7 @@ def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False, use_reloader=False)
 
 # Bot Configuration
-BOT_TOKEN = "8587129513:AAGn3x7N5mGp4RZFjKRTur5mlXfHpL_7R14"
+BOT_TOKEN = "8587129513:AAFi3sGv2ZGGYXIesG3TOrNPXIV15IBB6oY"
 ADMIN_ID = 8469461108
 BOT_USERNAME = "EXUBOTAI_1BOT"  # Plain text for URLs
 
