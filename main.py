@@ -55,28 +55,10 @@ BOT_DISPLAY_NAME = "𝐑𝐑𝐂 <𝐊> 𝐄𝐗𝐔 | 𝐗𝐒𝐔"
 # ============================================
 SUBSCRIPTION_ENTITIES = [
     {
-        "id": "@exulive",
+        "id": "@exucodex",
         "name": "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟏 (𝐄𝐱𝐮 𝐋𝐢𝐯𝐞)",
         "type": "channel",
-        "link": "https://t.me/exulive"
-    },
-    {
-        "id": "@exubackup",
-        "name": "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟐 (𝐄𝐱𝐮 𝐁𝐚𝐜𝐤𝐮𝐩)",
-        "type": "channel",
-        "link": "https://t.me/exubackup"
-    },
-    {
-        "id": "@funcodex",
-        "name": "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟑 (𝐅𝐮𝐧𝐜𝐨𝐝𝐞𝐱)",
-        "type": "channel",
-        "link": "https://t.me/funcodex"
-    },
-    {
-        "id": "@exucoder1",
-        "name": "𝐆𝐫𝐨𝐮𝐩 𝟏 (𝐄𝐱𝐮 𝐂𝐨𝐝𝐞𝐫𝐬)",
-        "type": "group",
-        "link": "https://t.me/exucoder1"
+        "link": "https://t.me/exucodex"
     }
 ]
 
