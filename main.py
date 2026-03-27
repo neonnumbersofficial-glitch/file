@@ -48,7 +48,7 @@ ADMIN_ID = 8379062893
 BOT_USERNAME = "EXUFILEBOT"  # Plain text for URLs
 
 # Display name with Unicode bold
-BOT_DISPLAY_NAME = "𝐑𝐑𝐂 <𝐊> 𝐄𝐗𝐔 | 𝐗𝐒𝐔"
+BOT_DISPLAY_NAME = "𝐄𝐗𝐑 𝐄𝐗𝐔 | 𝐗𝐒𝐔"
 
 # ============================================
 # CHANNELS AND GROUPS FOR SUBSCRIPTION
@@ -56,7 +56,7 @@ BOT_DISPLAY_NAME = "𝐑𝐑𝐂 <𝐊> 𝐄𝐗𝐔 | 𝐗𝐒𝐔"
 SUBSCRIPTION_ENTITIES = [
     {
         "id": "@exucodex",
-        "name": "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟏 (𝐄𝐱𝐮 𝐋𝐢𝐯𝐞)",
+        "name": "𝐂𝐡𝐚𝐧𝐧𝐞𝐥 𝟏 (𝐄𝐗𝐔 𝐂𝐨𝐝𝐞𝐱)",
         "type": "channel",
         "link": "https://t.me/exucodex"
     }
