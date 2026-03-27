@@ -43,9 +43,9 @@ def run_flask():
     flask_app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False, use_reloader=False)
 
 # Bot Configuration
-BOT_TOKEN = "8587129513:AAFi3sGv2ZGGYXIesG3TOrNPXIV15IBB6oY"
-ADMIN_ID = 8469461108
-BOT_USERNAME = "EXUBOTAI_1BOT"  # Plain text for URLs
+BOT_TOKEN = "8656072423:AAF8EV7ijvVk5hVB5Ae40PiEeMywO-8Zzds"
+ADMIN_ID = 8379062893
+BOT_USERNAME = "EXUFILEBOT"  # Plain text for URLs
 
 # Display name with Unicode bold
 BOT_DISPLAY_NAME = "𝐑𝐑𝐂 <𝐊> 𝐄𝐗𝐔 | 𝐗𝐒𝐔"
